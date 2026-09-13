@@ -1,0 +1,14 @@
+{
+  "name": "H3 Latent Continue",
+  "version": "0.2.2",
+  "description": "Comparative native H3 latent continuation in the existing video form",
+  "type": [
+    "model",
+    "extension"
+  ],
+  "model_handlers": [
+    ".handler"
+  ],
+  "defaults": "./defaults",
+  "profiles": "./profiles"
+}

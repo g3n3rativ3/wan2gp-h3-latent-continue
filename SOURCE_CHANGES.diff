@@ -1,0 +1,103 @@
+--- models/minimax_h3/pipeline.py
++++ pipeline.py
+@@ -1,4 +1,6 @@
+ """WanGP inference pipeline for MiniMax H3."""
++
++from .latent_runtime import LatentMixin
+ 
+ import functools
+ import hashlib
+@@ -16,15 +18,15 @@
+ from shared.utils.loras_mutipliers import update_loras_slists
+ from shared.utils.text_encoder_cache import TextEncoderCache
+ from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count, normalize_overlap
+-from .constants import (H3_AUDIO_REFINEMENT_DENOISE, H3_AUDIO_REFINEMENT_SETTING, H3_AUDIO_REFINEMENT_STEPS,
++from models.minimax_h3.constants import (H3_AUDIO_REFINEMENT_DENOISE, H3_AUDIO_REFINEMENT_SETTING, H3_AUDIO_REFINEMENT_STEPS,
+                         H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, h3_grouped_masking_enabled)
+-from .dialogue import H3_DIALOGUE_GENERATION, generate_dialogue, is_dialogue_prompt
+-from .first_block_cache import MiniMaxH3FirstBlockCache
+-from .interrupt import GenerationInterrupted
+-from .pdd import pdd_sampling_plans, pdd_sampling_plans_for_sigmas
+-from .spectrum import MiniMaxH3Spectrum
+-from .transformer import VISUAL_COND_TIMESTEP, pack_audio, patchify_video, unpack_audio
+-from .video_vae import LATENTS_MEAN, LATENTS_STD
++from models.minimax_h3.dialogue import H3_DIALOGUE_GENERATION, generate_dialogue, is_dialogue_prompt
++from models.minimax_h3.first_block_cache import MiniMaxH3FirstBlockCache
++from models.minimax_h3.interrupt import GenerationInterrupted
++from models.minimax_h3.pdd import pdd_sampling_plans, pdd_sampling_plans_for_sigmas
++from models.minimax_h3.spectrum import MiniMaxH3Spectrum
++from models.minimax_h3.transformer import VISUAL_COND_TIMESTEP, pack_audio, patchify_video, unpack_audio
++from models.minimax_h3.video_vae import LATENTS_MEAN, LATENTS_STD
+ 
+ 
+ AUDIO_SAMPLE_RATE = 32000
+@@ -351,7 +353,7 @@
+     return torch.from_numpy(np.asarray(image).copy()).permute(2, 0, 1).float().div_(127.5).sub_(1.0).unsqueeze(1)
+ 
+ 
+-class MiniMaxH3Pipeline:
++class MiniMaxH3Pipeline(LatentMixin):
+     refinement_api = "masked_video_sigma_v1"
+ 
+     def __init__(self, transformer, text_encoder, video_vae, audio_vae, latent_upscaler=None, reference_mode=False, audio_only=False, dtype=torch.bfloat16, fixed_prompt=None):
+@@ -667,6 +669,7 @@
+                 VAE_tile_size=VAE_tile_size, fps=fps, sample_solver=sample_solver, attention_sparsity=attention_sparsity,
+                 loras_slists=loras_slists, loras_selected=loras_selected, custom_settings=custom_settings,
+                 set_progress_status=set_progress_status, verbose_level=verbose_level)
++        self._lc_begin(locals())
+         self._use_shared_components()
+         grouped_masked_denoising = h3_grouped_masking_enabled(custom_settings)
+         fps = float(fps)
+@@ -786,7 +789,11 @@
+                 source = _resize_video(source, target_height, target_width)
+                 return _crop_spatial_tile(source, tile_origin[0], tile_origin[1], stage_height, stage_width)
+ 
+-            if continuation_count:
++            if continuation_count and self._lc_source is not None:
++                self._lc_video_conditions(stage_latents, stage_keyframes, continuation_count)
++                # Match baseline prompt presentation, but use the saved pre-codec frame.
++                stage_presentation.append({"type": "image", "frames": _qwen_frames(self._lc_source["last_frame"].clone())})
++            elif continuation_count:
+                 if history_frames is not None:
+                     self._add_video_history(prepare_stage_video(history_frames), stage_latents, stage_keyframes)
+                 self._add_image_condition(prepare_stage_video(continuation[:, -1:]), 0, stage_presentation, stage_latents, stage_keyframes)
+@@ -812,7 +819,11 @@
+         visual_latents, keyframes = prepare_keyframes(height, width, presentation)
+         if not self.reference_mode and (input_ref_images or input_frames is not None and not (control_video or audio_from_control_video) or input_frames2 is not None):
+             raise ValueError("Image, video, and audio references require the Ref2VA checkpoint")
+-        if continuation_count:
++        if continuation_count and self._lc_source is not None:
++            self._lc_audio_conditions(audio_latents, audio_keyframes, continuation_count, fps)
++            if waveform is not None and history_count:
++                history_waveform = waveform[..., :round(history_count / fps * AUDIO_SAMPLE_RATE)]
++        elif continuation_count:
+             if waveform is not None:
+                 overlap_samples = round(continuation_count / fps * AUDIO_SAMPLE_RATE)
+                 continuation_waveform = _fit_audio_samples(waveform[0], overlap_samples).unsqueeze(0)
+@@ -1440,6 +1451,7 @@
+         self._check_abort()
+         self._use_shared_components()
+         context = payload = presentation = visual_latents = audio_latents = refs = keyframes = audio_keyframes = source_latents = source_noise = source_buffer = editable_mask = None
++        self._lc_capture(video, audio, target_frames, fps, width, height)
+         if not self.audio_only and decoded_video is None:
+             if frozen_target_video is None:
+                 video = video.to(self.vae._model_dtype)
+@@ -1447,6 +1459,7 @@
+                 decoded_video = _video_to_uint8_cpu(decoded_video) if tiled_phase_2 else decoded_video.cpu()
+             else:
+                 decoded_video = frozen_target_video[:, :target_frames].cpu()
++        self._lc_decoded(decoded_video)
+         video = None
+         decoded_audio = self.audio_vae.decode(audio)[0]
+         audio = None
+--- models/minimax_h3/components/packing.py
++++ packing.py
+@@ -139,6 +139,8 @@
+             history_time += length
+         elif anchor == "first":
+             origin = target_origin
++        elif isinstance(anchor, (int, float)) and not isinstance(anchor, bool):
++            origin = target_origin + float(anchor)
+         else:
+             raise ValueError(f"Unknown MiniMax H3 audio condition anchor {anchor!r}")
+         _fill_audio_positions(position_ids, rows, length, origin, width_grid)

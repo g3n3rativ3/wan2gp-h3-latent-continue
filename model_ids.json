@@ -1,0 +1,6 @@
+{
+  "h3_latent_fl2va": "minimax_h3_fl2va",
+  "h3_latent_ref2va": "minimax_h3_ref2va",
+  "h3_latent_fl2va_pruned": "minimax_h3_fl2va_pruned",
+  "h3_latent_ref2va_pruned": "minimax_h3_ref2va_pruned"
+}
