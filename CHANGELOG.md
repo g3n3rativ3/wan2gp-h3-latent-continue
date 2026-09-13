@@ -1,5 +1,11 @@
 # Historique
 
+## 0.2.3
+
+- Un arrêt demandé par l'utilisateur ne déclenche plus l'erreur de checkpoint latent absent.
+- La capture latente incomplète est abandonnée et aucun safetensors n'est écrit.
+- Le contrôle reste actif lorsqu'un rendu signale une fin normale sans produire le checkpoint demandé.
+
 ## 0.2.2
 
 - Nouveau nom public **H3 Latent Continue** dans la liste des plugins et le sélecteur de modèles.

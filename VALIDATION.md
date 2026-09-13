@@ -1,4 +1,7 @@
-# Validation de la version 0.2.2
+# Validation de la version 0.2.3
+
+- Interruption utilisateur simulée avec le comportement natif Wan2GP (`generate_media` retourne `True` tandis que `state.gen.abort` reste actif) : aucune erreur et capture temporaire nettoyée.
+- Fin normale simulée sans checkpoint : erreur de sécurité toujours émise.
 
 - Identité publique, famille affichée, quatre noms de modèles, dossier racine et archive renommés en **H3 Latent Continue** / `wan2gp-h3-latent-continue`.
 - Identifiants d'architecture et clé des options inchangés pour maintenir la compatibilité des données existantes.

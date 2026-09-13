@@ -245,6 +245,26 @@ class Integration(unittest.TestCase):
             self.assertIsNone(JOB.get())
         self.assertEqual([x['save'] for x in seen],[True,False])
 
+    def test_user_abort_discards_pending_capture_without_checkpoint_error(self):
+        state={'gen':{'abort':False}}
+        def original(task,model_type,plugin_data=None,guidance_phases=1,state=None):
+            job=JOB.get()
+            job['pending']={'incomplete':True}
+            state['gen']['abort']=True
+            return True  # Wan2GP returns True after handling a pipeline None result.
+        wrapped=make_generation_wrapper(original,lambda x:x)
+        result=wrapped({},'h3_latent_fl2va',{KEY:{'save':True}},state=state)
+        self.assertTrue(result)
+        self.assertIsNone(JOB.get())
+
+    def test_completed_generation_without_checkpoint_still_fails(self):
+        def original(task,model_type,plugin_data=None,guidance_phases=1,state=None):
+            return True
+        wrapped=make_generation_wrapper(original,lambda x:x)
+        with self.assertRaisesRegex(RuntimeError,'without a saved latent checkpoint'):
+            wrapped({},'h3_latent_fl2va',{KEY:{'save':True}},state={'gen':{'abort':False}})
+        self.assertIsNone(JOB.get())
+
     def test_native_model_bypass(self):
         def original(task,model_type,plugin_data=None):
             self.assertIsNone(JOB.get()); return 'native'

@@ -103,7 +103,7 @@ class LatentMixin:
                      'join_mode':getattr(self, '_lc_join_mode', 'baseline'),
                      'join_settings':{k:job['options'].get(k) for k in ('video_context_frames','audio_context_seconds')},
                      'width':int(width),'height':int(height),'settings':job['settings'],
-                     'prototype_version':'0.2.2', 'continuation_mode':'latent' if self._lc_source is not None else 'pixels'},
+                     'prototype_version':'0.2.3', 'continuation_mode':'latent' if self._lc_source is not None else 'pixels'},
         }
 
     def _lc_decoded(self, decoded):

@@ -189,7 +189,12 @@ def make_generation_wrapper(original, get_base):
         token = JOB.set(job)
         try:
             result = original(*args, **kwargs)
-            if opts['save'] and result and not job['saved']:
+            state = state_mapping(params.get('state'))
+            generation = state_mapping(state.get('gen'))
+            aborted = generation.get('abort') is True
+            if aborted and opts['save'] and not job['saved']:
+                print('[H3 Latent] Generation aborted by user; pending latent capture discarded.')
+            if opts['save'] and result and not job['saved'] and not aborted:
                 raise RuntimeError('Video generation returned without a saved latent checkpoint. See console; no latent success is claimed.')
             return result
         finally:

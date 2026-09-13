@@ -1,6 +1,10 @@
 # H3 Latent Continue for Wan2GP
 
-Version **0.2.2**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
+Version **0.2.3**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
+
+## Version 0.2.3: safe user abort
+
+Aborting an active generation now discards any incomplete latent capture and returns control to Wan2GP's normal abort handling. No checkpoint is written for an interrupted generation, and the missing-checkpoint safety check is not reported as a rendering error. That safety check remains active after a generation that claims normal completion but fails to publish its requested checkpoint.
 
 ## Purpose
 
@@ -132,7 +136,7 @@ If Turbo and Spectrum are normally combined, first compare the three branches wi
 
 ## Checkpoint format
 
-Version 0.2.2 reads checkpoint formats v1 and v2 and writes v2. Safetensors metadata identifies the format as:
+Version 0.2.3 reads checkpoint formats v1 and v2 and writes v2. Safetensors metadata identifies the format as:
 
 ```text
 format=wan2gp.h3.latent-continuation
@@ -211,7 +215,7 @@ The saved file represents a completed video segment. It is not a sampler-state c
 
 ## Validation
 
-Version 0.2.2 passes 31 CPU tests. `pipeline_smoke.py` and `ui_smoke.py` also pass independently against both supplied Wan2GP 12.72 and 13.0 source trees.
+Version 0.2.3 passes 33 CPU tests. `pipeline_smoke.py` and `ui_smoke.py` also pass independently against both supplied Wan2GP 12.72 and 13.0 source trees.
 
 The tests cover:
 
@@ -259,11 +263,12 @@ The pipeline tests use tiny deterministic CPU substitutes for the H3 DiT and VAE
 - **Resolution/FPS mismatch:** restore the original settings; latent tensors cannot be resized safely.
 - **Model/VAE mismatch:** use the same model variant and configured VAE files as the source generation.
 - **`Output tail no longer matches`:** disable incompatible processing or trimming. The plugin refuses to publish a checkpoint associated with a different output.
-- **Old `source compatibility check failed` message:** an earlier plugin version is still installed. Replace its complete directory with version 0.2.2 and restart Wan2GP.
+- **Old `source compatibility check failed` message:** an earlier plugin version is still installed. Replace its complete directory with version 0.2.3 and restart Wan2GP.
 - **Frozen audio mode is rejected:** choose **No Skipping**, disable Spectrum or other skipped-step caches, and remove additional audio guides.
 
 ## Version history
 
+- **0.2.3:** treats a user abort as a normal interruption, discards incomplete latent data, and preserves the missing-checkpoint guard for genuinely completed jobs.
 - **0.2.2:** renamed the plugin, folder, model labels, and ZIP to H3 Latent Continue while preserving internal identifiers and checkpoint compatibility.
 - **0.2.1:** removed source hash/version blocking and added optional Wan2GP 13.0 progress integration.
 - **0.2.0:** added extended video/audio context and frozen audio prefix experiments; introduced checkpoint format v2.

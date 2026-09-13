@@ -10,7 +10,7 @@ class H3LatentPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = 'H3 Latent Continue'
-        self.version = '0.2.2'
+        self.version = '0.2.3'
         self.description = 'Single-phase H3 comparative latent continuation in the existing video form.'
         self._bridge_installed = False
 
