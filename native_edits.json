@@ -1,0 +1,34 @@
+[
+  {
+    "old": "                set_progress_status=set_progress_status, verbose_level=verbose_level)\n        self._use_shared_components()\n",
+    "new": "                set_progress_status=set_progress_status, verbose_level=verbose_level)\n        self._lc_begin(locals())\n        self._use_shared_components()\n"
+  },
+  {
+    "old": "\n            if continuation_count:\n                if history_frames is not None:\n",
+    "new": "\n            if continuation_count and self._lc_source is not None:\n                self._lc_video_conditions(stage_latents, stage_keyframes, continuation_count)\n                # Match baseline prompt presentation, but use the saved pre-codec frame.\n                stage_presentation.append({\"type\": \"image\", \"frames\": _qwen_frames(self._lc_source[\"last_frame\"].clone())})\n            elif continuation_count:\n                if history_frames is not None:\n"
+  },
+  {
+    "old": "            raise ValueError(\"Image, video, and audio references require the Ref2VA checkpoint\")\n        if continuation_count:\n            if waveform is not None:\n",
+    "new": "            raise ValueError(\"Image, video, and audio references require the Ref2VA checkpoint\")\n        if continuation_count and self._lc_source is not None:\n            self._lc_audio_conditions(audio_latents, audio_keyframes, continuation_count, fps)\n            if waveform is not None and history_count:\n                history_waveform = waveform[..., :round(history_count / fps * AUDIO_SAMPLE_RATE)]\n        elif continuation_count:\n            if waveform is not None:\n"
+  },
+  {
+    "old": "        audio_t = round(aligned_target_frames / fps * AUDIO_LATENT_FPS)\n        generator = torch.Generator(device=\"cpu\").manual_seed(int(seed))\n",
+    "new": "        audio_t = round(aligned_target_frames / fps * AUDIO_LATENT_FPS)\n        if getattr(self, '_lc_join_mode', 'baseline') != 'baseline':\n            audio_t = math.ceil(aligned_target_frames / fps * AUDIO_LATENT_FPS)\n        lc_audio_prefix = getattr(self, '_lc_audio_prefix', None)\n        if lc_audio_prefix is not None:\n            if target_audio_condition is not None:\n                raise ValueError('H3 audio-prefix continuation conflicts with existing target audio conditioning.')\n            target_audio_condition = lc_audio_prefix\n            audio_t += lc_audio_prefix.shape[-1]\n        generator = torch.Generator(device=\"cpu\").manual_seed(int(seed))\n"
+  },
+  {
+    "old": "                   \"attention_sparsity\": float(attention_sparsity)}\n",
+    "new": "                   \"attention_sparsity\": float(attention_sparsity)}\n        payload['lc_audio_offset'] = getattr(self, '_lc_audio_origin', 0.0) * AUDIO_LATENT_FPS\n"
+  },
+  {
+    "old": "        context = payload = presentation = visual_latents = audio_latents = refs = keyframes = audio_keyframes = source_latents = source_noise = source_buffer = editable_mask = None\n        if not self.audio_only and decoded_video is None:\n",
+    "new": "        context = payload = presentation = visual_latents = audio_latents = refs = keyframes = audio_keyframes = source_latents = source_noise = source_buffer = editable_mask = None\n        self._lc_capture(video, audio, target_frames, fps, width, height)\n        if not self.audio_only and decoded_video is None:\n"
+  },
+  {
+    "old": "                decoded_video = frozen_target_video[:, :target_frames].cpu()\n        video = None\n",
+    "new": "                decoded_video = frozen_target_video[:, :target_frames].cpu()\n        self._lc_decoded(decoded_video)\n        video = None\n"
+  },
+  {
+    "old": "        decoded_audio = self.audio_vae.decode(audio)[0]\n        audio = None\n        target_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)\n        decoded_audio = _fit_audio_samples(decoded_audio, target_samples)\n",
+    "new": "        decoded_audio = self.audio_vae.decode(audio)[0]\n        if lc_audio_prefix is not None:\n            # Decode the fixed past and the generated future together, then\n            # remove pre-roll at audio sample precision, without a crossfade.\n            lc_trim_samples = round(-self._lc_audio_origin * AUDIO_SAMPLE_RATE)\n            decoded_audio = decoded_audio[:, lc_trim_samples:]\n        audio = None\n        target_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)\n        if lc_audio_prefix is not None and decoded_audio.shape[-1] < target_samples:\n            raise ValueError('H3 audio-prefix decode is shorter than the requested timeline; refusing to pad the join silently.')\n        decoded_audio = _fit_audio_samples(decoded_audio, target_samples)\n"
+  }
+]

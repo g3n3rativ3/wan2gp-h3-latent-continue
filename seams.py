@@ -4,6 +4,11 @@ import math
 MODES = ('baseline', 'context', 'audio_prefix')
 
 
+def reference_context_frames(delivered_frames, native_overlap):
+    """Keep one H3 history interval even when assembly overlaps a single frame."""
+    return min(int(delivered_frames), max(18, int(native_overlap)))
+
+
 def seam_settings(options):
     mode = options.get('join_mode', 'baseline')
     if mode not in MODES:

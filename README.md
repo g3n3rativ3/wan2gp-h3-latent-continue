@@ -1,16 +1,30 @@
 # H3 Latent Continue for Wan2GP
 
-Version **0.2.3**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
+Version **0.3.2**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
 
 ## Version 0.2.3: safe user abort
 
 Aborting an active generation now discards any incomplete latent capture and returns control to Wan2GP's normal abort handling. No checkpoint is written for an interrupted generation, and the missing-checkpoint safety check is not reported as a rendering error. That safety check remains active after a generation that claims normal completion but fails to publish its requested checkpoint.
 
+## Version 0.3.1: closure-based plugin wrappers
+
+Latent hook installation now follows captured function references as well as standard `__wrapped__` links. This supports plugins that wrap native H3 methods in closures without using `functools.wraps`. The wrapper and its captured state remain intact; the reachable native body receives the latent edits. If no unique matching native body can be reached, installation stops before changing any method instead of guessing.
+
+CPU regression testing uses an undecorated closure around the installed native H3 generate method and checks that it still runs before and after all three continuation modes. This simulates the reported wrapper pattern; it does not validate the exact third-party plugins from the user's installation.
+
+## Version 0.3.2: minimum latent history (comparative fix)
+
+Reference mode now retains at least 18 source frames of original video/audio latent history when available, independently of the overlap used to assemble the output. On a 124-frame H3 source, a one-frame overlap previously supplied only one video latent block and two audio tokens. This update supplies six video latent blocks and 31 audio tokens. The native assembly overlap and output duration do not change. Larger existing Reference overlaps and the explicit 18/35/52-frame extended modes retain their requested context.
+
+This is a targeted correction for insufficient context observed in the supplied test files, not a GPU-validated guarantee that all visual degradation is fixed. The provided pair genuinely used latent continuation, with valid finite tensors. It also used Spectrum and a Turbo LoRA; their contribution has not been isolated. First retry from the original source/checkpoint with the same settings to evaluate the context change. Test No Skipping separately if necessary, without changing several settings at once.
+
+Checkpoints now record effective context (native overlap, selected latent indices and temporal positions), plus the native LoRA selection and acceleration settings for diagnosis. See `DIAGNOSIS-0.3.2.md` for the supplied-pair findings and the separate final-frame-count limitation.
+
 ## Purpose
 
 Wan2GP's standard Continue Video workflow encodes the supplied MP4 again through the video VAE. Repeating that operation can progressively damage fine details, contrast, texture, and identity. H3 Latent Continue can save the original video and audio latents produced during inference and reuse them in a later continuation. The source context therefore does not undergo another VAE encode cycle.
 
-User testing with five successive continuations showed a clear visual improvement over the standard pixel-based workflow on the tested material. A slight visual join and a more noticeable audio join can still remain. Version 0.2.0 added experimental context modes aimed at those joins.
+User testing of the earlier 0.1.7 prototype with five successive continuations showed a clear visual improvement over the standard pixel-based workflow on the tested material. A slight visual join and a more noticeable audio join can still remain. Version 0.2.0 added experimental context modes aimed at those joins.
 
 This plugin extends the existing **Media Generator** form. It does not create a separate generation tab or duplicate Wan2GP's prompt, model, LoRA, sampler, resolution, seed, or video settings.
 
@@ -25,24 +39,25 @@ This plugin extends the existing **Media Generator** form. It does not create a 
 
 5. Start Wan2GP, open **Plugins**, enable **H3 Latent Continue**, save, and restart Wan2GP if requested.
 6. Reload the browser page completely with `Ctrl+F5`.
-7. In the normal model selector, choose one of the models carrying the **Latent Continue** suffix.
+7. In the normal model selector, choose the corresponding ordinary **MiniMax H3** model.
 
 Do not replace or edit any Wan2GP core file.
 
-## Available models
+## Native MiniMax H3 models (0.3.0)
 
-The plugin adds four model entries and delegates weight loading to Wan2GP's native MiniMax H3 handler:
+Use Wan2GP's ordinary **MiniMax H3** family. No additional model family, model weights, or duplicate model entries are registered by this release. Supported base architectures are FL2VA, FL2VA Pruned, Ref2VA and Ref2VA Pruned; native catalog variants resolving to those architectures share the controls.
 
-- MiniMax H3 FL2VA 33B — Latent Continue
-- MiniMax H3 FL2VA Pruned 20B — Latent Continue
-- MiniMax H3 Ref2VA 33B — Latent Continue
-- MiniMax H3 Ref2VA Pruned 20B — Latent Continue
+This is an extension-only plugin. The former `MiniMax H3 Latent Continue` family and its four model definitions have been removed. On upgrade, close Wan2GP and replace the entire plugin directory, rather than copying files over the old release. Keep only `plugins/wan2gp-h3-latent-continue` and enable **H3 Latent Continue** in Plugins.
 
-The internal architecture identifiers remain `h3_latent_*`. This preserves compatibility with existing presets, queued tasks, and latent checkpoints made with the earlier H3 Latent Prototype releases.
+Select the corresponding native model and recreate old queued jobs or presets that reference `h3_latent_*` architectures. Existing video/checkpoint v1/v2 pairs remain readable: their saved identity already uses the native architecture. Keep the same underlying weight and VAE files, resolution and FPS.
+
+Native model instances retain their class. Existing wrappers from other plugins are preserved when they delegate to the native H3 method. Native LoRA loading needs no identifier translation. Integration with RefMods, image-mode plugins, or refiners still depends on what those plugins do; an output-changing postprocessor can invalidate the saved latent/video match. Those third-party plugins have not been tested together in a full GPU session.
+
+With both latent options unchecked, the original native rendering path runs normally, including configurations supported by Wan2GP itself. With latent saving or continuation enabled, only the supported single-phase video configurations are accepted.
 
 ## User interface
 
-When a Latent Continue model is selected, the existing Media Generator form receives these controls:
+When a supported native MiniMax H3 model is selected, the existing Media Generator form receives these controls:
 
 - **Save latent checkpoint next to output video**: saves the inference latents. Disabled by default.
 - **Continue with latent**: expandable panel shown with Continue Video.
@@ -56,7 +71,7 @@ The source MP4 remains in Wan2GP's normal **Video to Continue** field.
 
 ## Creating a video and its latent checkpoint
 
-1. Select a model with the **Latent Continue** suffix.
+1. Select a supported native **MiniMax H3** model.
 2. Configure the generation normally.
 3. Enable **Save latent checkpoint next to output video**.
 4. Generate the video.
@@ -81,7 +96,7 @@ Latents cannot be recovered retroactively from a video generated without the sav
 
 ## Continuing with saved latents
 
-1. Select the same Latent Continue model variant used for the source.
+1. Select the same native MiniMax H3 model variant used for the source.
 2. Select **Continue Video**.
 3. Load the original, unmodified source MP4 in **Video to Continue**.
 4. Open **Continue with latent**.
@@ -99,7 +114,7 @@ The latent path never silently falls back to pixel encoding. Missing or incompat
 
 | Mode | Behaviour | Recommended use |
 | --- | --- | --- |
-| **Reference (0.1.7)** | Uses the original latent continuation path. The extended duration controls are ignored. | Initial reference and visual-quality baseline. |
+| **Reference (minimum 18-frame context)** | Uses original latents with at least 18 frames of history when available. The extended duration controls are ignored. | Initial reference and visual-quality baseline. |
 | **Longer video/audio context** | Supplies 18, 35, or 52 saved video frames independently of Wan2GP's native overlap, plus 0.5, 1, or 2 seconds of time-positioned audio context. | Tests whether additional history reduces the join. |
 | **Longer context + frozen audio prefix** | Uses the extended video context and copies the preceding audio latents into an immutable target prefix. The prefix and continuation are decoded together, then the pre-roll is removed at audio-sample precision. | Primary experiment for the audible join. Requires **No Skipping**. |
 
@@ -119,7 +134,7 @@ Audio latent positions use a 40 Hz grid. Fractional timing at the video boundary
 
 Create one source clip A with latent saving enabled and keep its MP4/checkpoint pair unchanged. From that pair, make three independent continuations:
 
-1. Reference (0.1.7).
+1. Reference (minimum 18-frame context).
 2. Longer video/audio context.
 3. Longer context + frozen audio prefix.
 
@@ -136,7 +151,7 @@ If Turbo and Spectrum are normally combined, first compare the three branches wi
 
 ## Checkpoint format
 
-Version 0.2.3 reads checkpoint formats v1 and v2 and writes v2. Safetensors metadata identifies the format as:
+Version 0.3.0 reads checkpoint formats v1 and v2 and writes v2. Safetensors metadata identifies the format as:
 
 ```text
 format=wan2gp.h3.latent-continuation
@@ -186,7 +201,9 @@ Version 0.2.1 removed the former source-file hash gate and its allow-list. Rende
 
 The plugin was exercised against the supplied Wan2GP 12.72 and 13.0 archives. On Wan2GP 13.0 it uses the native generation and VAE progress reporting. On 12.72 that additional progress integration is simply absent. The video VAE, transformer, weight loader, and most model components are imported from the installed Wan2GP version, so native fixes in those components are used automatically.
 
-The plugin still carries an adapted H3 `generate()` pipeline because it needs latent capture and injection points unavailable through the standard plugin API. A future removal of required functions or a change to H3 latent conventions may therefore require an update. Future changes made only inside Wan2GP's native `generate()` body are not automatically merged into the adapted copy.
+The plugin now runs the installed native H3 code. It inserts local capture/continuation edits into `generate`, audio-position packing and the transformer layout method when a latent job is first requested. Existing wrapper chains remain in place; native jobs with the options disabled use the original functions. No source hash, version or commit allow-list is used.
+
+Changes outside those insertion points are retained. If a required insertion point is removed or becomes ambiguous, only the latent operation is rejected with a precise error; ordinary native generation remains available. This is a functional dependency, not a whole-file compatibility check. A third-party plugin that replaces a method without delegating to its original cannot be guaranteed to compose with this integration.
 
 `check_compatibility.py` is an optional installation diagnostic. It checks only that three Wan2GP/H3 entry files exist. It performs no hash or version comparison, does not certify runtime compatibility, and is never called during generation:
 
@@ -198,24 +215,20 @@ Official latent capture, injection, and final-export hooks in Wan2GP would be th
 
 ## Architecture
 
-- `handler.py`: declares four distinct H3 model entries, delegates native model loading, and upgrades only the selected pipeline instance.
-- `pipeline.py`: adapted H3 pipeline with latent preparation, temporal injection, audio-prefix handling, and capture before decode.
-- `latent_runtime.py`: per-task state, checkpoint selection, temporal context, validation, and CPU capture.
-- `packing.py` and `layout.py`: explicit placement of video and audio context tokens.
-- `checkpoint.py`: safetensors format, validation, video binding, and atomic output.
-- `plugin.py`: adds controls to the existing Media Generator form.
-- `form_bridge.py` and `integration.py`: preserve the selected options through form saving, queueing, generation, video export, metadata writing, and final checkpoint publication.
-- `progress_bridge.py`: optional integration with Wan2GP 13.0 progress reporting.
+- `native_bridge.py`: wraps native weight loading to record checkpoint identity, installs local edits without replacing model classes, and preserves existing method wrappers.
+- `native_edits.json`: the small insertion/replacement blocks applied to the installed H3 generation function. Unrelated installed code is retained.
+- `latent_runtime.py`: per-task state, checkpoint selection, temporal context, validation and CPU capture.
+- `checkpoint.py`: safetensors validation, video binding and atomic output.
+- `plugin.py`: adds controls to the existing Media Generator form on native H3 models.
+- `form_bridge.py` and `integration.py`: transport options through native form events, queueing, generation and final video export.
+- `seams.py`: time positioning of the extended audio/video context.
+- `packing.py` and `progress_bridge.py`: test support retained from the earlier implementation; production rendering uses the installed native packing and progress modules.
 
-The lifecycle bridge is required because the normal metadata hook cannot access raw inference latents and does not by itself associate a capture with the final muxed filename. The bridge patches functions in memory through Wan2GP's plugin API; it does not modify core files on disk.
-
-Options are also copied into each queued task. This prevents later UI edits or loss of shared `plugin_data` from changing an already queued job.
-
-The saved file represents a completed video segment. It is not a sampler-state checkpoint and cannot resume an interrupted denoising step.
+No Wan2GP file is changed on disk. The former copied pipeline, custom model handler, model definitions and LoRA identifier adapter have been removed. Options are frozen in queued tasks, and abort cleanup is retained. A checkpoint represents a completed video segment, not an interrupted sampler state.
 
 ## Validation
 
-Version 0.2.3 passes 33 CPU tests. `pipeline_smoke.py` and `ui_smoke.py` also pass independently against both supplied Wan2GP 12.72 and 13.0 source trees.
+The 32 passing CPU unit tests cover checkpoints, export and native job routing. The obsolete model-alias LoRA tests have been removed. `pipeline_smoke.py` and `ui_smoke.py` also pass independently against both supplied Wan2GP 12.72 and 13.0 source trees.
 
 The tests cover:
 
@@ -256,17 +269,19 @@ The pipeline tests use tiny deterministic CPU substitutes for the H3 DiT and VAE
 ## Troubleshooting
 
 - **Plugin appears twice:** close Wan2GP and delete `plugins/wan2gp-h3-latent-prototype`. Keep only `plugins/wan2gp-h3-latent-continue`.
-- **Controls are missing:** enable H3 Latent Continue, restart Wan2GP, use `Ctrl+F5`, and select a model carrying the **Latent Continue** suffix. Check for `Inline controls connected to N native form event(s)` in the console.
+- **Controls are missing:** enable H3 Latent Continue, restart Wan2GP, use `Ctrl+F5`, and select a supported native **MiniMax H3** model. Check for `Inline controls connected to N native form event(s)` in the console.
 - **The console reports `save=False`:** create a new task after enabling the checkbox. Existing queued tasks keep their original snapshot. Check the `Form captured`, `Queued`, and `Job options` lines.
 - **Video exists but no checkpoint was written:** inspect the final save error and verify that no safetensors file already uses the same name.
 - **Source mismatch:** use the exact original MP4 associated with the checkpoint. Do not remux or edit it.
 - **Resolution/FPS mismatch:** restore the original settings; latent tensors cannot be resized safely.
 - **Model/VAE mismatch:** use the same model variant and configured VAE files as the source generation.
 - **`Output tail no longer matches`:** disable incompatible processing or trimming. The plugin refuses to publish a checkpoint associated with a different output.
-- **Old `source compatibility check failed` message:** an earlier plugin version is still installed. Replace its complete directory with version 0.2.3 and restart Wan2GP.
+- **Old `source compatibility check failed` message:** an earlier plugin version is still installed. Replace its complete directory with version 0.3.0 and restart Wan2GP.
 - **Frozen audio mode is rejected:** choose **No Skipping**, disable Spectrum or other skipped-step caches, and remove additional audio guides.
 
 ## Version history
+
+- **0.3.0:** moves all controls to native MiniMax H3 models, removes the separate model family, and applies local latent hooks while retaining native classes and existing wrapper chains.
 
 - **0.2.3:** treats a user abort as a normal interruption, discards incomplete latent data, and preserves the missing-checkpoint guard for genuinely completed jobs.
 - **0.2.2:** renamed the plugin, folder, model labels, and ZIP to H3 Latent Continue while preserving internal identifiers and checkpoint compatibility.

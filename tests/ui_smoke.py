@@ -32,6 +32,10 @@ spec=importlib.util.spec_from_file_location('h3uitest',ROOT/'__init__.py',submod
 pkg=importlib.util.module_from_spec(spec);sys.modules['h3uitest']=pkg;spec.loader.exec_module(pkg)
 from h3uitest.plugin import H3LatentPlugin
 
+import h3uitest.plugin as plugin_module
+import h3uitest.integration as integration_module
+plugin_module.install_loader=lambda:None  # Native loader is tested separately.
+integration_module.ensure_hooks=lambda:None
 plugin=H3LatentPlugin();plugin.setup_ui()
 assert not plugin.tabs
 plugin.get_base_model_type=lambda name:name
@@ -70,15 +74,12 @@ manager=PluginManager.__new__(PluginManager);manager.plugins={'prototype':plugin
 manager.plugins_dir=str(ROOT.parent)
 manager._plugin_metadata_cache={}
 extensions=manager.discover_plugin_model_extensions([ROOT.name])
-assert len(extensions)==1, 'Model plugin must be discovered, not just its UI'
-assert Path(extensions[0].defaults_root).is_dir()
-assert Path(extensions[0].profiles_root).is_dir()
-assert extensions[0].model_handlers==[ROOT.name+'.handler']
+assert extensions == [], 'Extension must not declare model families'
 with gr.Blocks() as app:
-    state=gr.State(StateClass(model_type='h3_latent_fl2va'))
+    state=gr.State(StateClass(model_type='minimax_h3_fl2va'))
     plugin_data=gr.State({})
     image_prompt_type=gr.Textbox(value='V',visible=False)
-    model_choice=gr.Dropdown(choices=['h3_latent_fl2va','native'],value='h3_latent_fl2va')
+    model_choice=gr.Dropdown(choices=['minimax_h3_fl2va','native'],value='minimax_h3_fl2va')
     with gr.Column() as parent:
         video_source=gr.Video()
         following=gr.Textbox(label='Original following control')
@@ -114,25 +115,25 @@ wrapped=gr.State({KEY:{'save':True,'continue':True,'latent_path':''},'another_pl
 assert callbacks['restore'](wrapped)==(True,True,None,'baseline',35,1.0)
 assert callbacks['restore'](gr.State())==(gr.skip(),)*6
 assert options(gr.State(gr.State({KEY:{'save':True}})))['save'] is True
-session={'model_type':'h3_latent_fl2va','all_settings':{'h3_latent_fl2va':{'plugin_data':{'another_plugin':{'keep':7}}}}}
+session={'model_type':'minimax_h3_fl2va','all_settings':{'minimax_h3_fl2va':{'plugin_data':{'another_plugin':{'keep':7}}}}}
 changed=callbacks['update_data'](False,True,None,wrapped,session)
 assert changed['another_plugin']=={'keep':7}
 assert wrapped.value[KEY]['save'] is True
 assert changed[KEY]['save'] is False
 # A checkbox alone, with no native field edit, must reach task settings.
 callbacks['update_data'](True,False,None,wrapped,session)
-queued=installed['get_model_settings'](session,'h3_latent_fl2va')
+queued=installed['get_model_settings'](session,'minimax_h3_fl2va')
 assert queued['plugin_data'][KEY]['save'] is True
 assert queued['plugin_data']['another_plugin']=={'keep':7}
-assert KEY not in session['all_settings']['h3_latent_fl2va']['plugin_data']
+assert KEY not in session['all_settings']['minimax_h3_fl2va']['plugin_data']
 # A stale native form snapshot cannot erase the latest explicit checkbox choice.
 prepared=installed['prepare_inputs_dict']('state',{'state':session,'plugin_data':{}})
 assert prepared['plugin_data'][KEY]['save'] is True
 callbacks['update_data'](False,False,None,wrapped,session)
-assert installed['get_model_settings'](session,'h3_latent_fl2va')['plugin_data'][KEY]['save'] is False
-other={'all_settings':{'h3_latent_fl2va':{}}}
-assert not options(installed['get_model_settings'](other,'h3_latent_fl2va')['plugin_data'])['save']
-assert callbacks['visibility'](gr.State({'model_type':'h3_latent_fl2va'}),'V')[0]['visible'] is True
+assert installed['get_model_settings'](session,'minimax_h3_fl2va')['plugin_data'][KEY]['save'] is False
+other={'all_settings':{'minimax_h3_fl2va':{}}}
+assert not options(installed['get_model_settings'](other,'minimax_h3_fl2va')['plugin_data'])['save']
+assert callbacks['visibility'](gr.State({'model_type':'minimax_h3_fl2va'}),'V')[0]['visible'] is True
 for malformed in (None,[],42,gr.State([]),{KEY:None},{KEY:'invalid'}):
     expected=(False,False,None,'baseline',35,1.0) if isinstance(malformed,dict) and KEY in malformed else (gr.skip(),)*6
     assert callbacks['restore'](malformed)==expected
@@ -140,7 +141,7 @@ def clean(target,inputs,model_type=None,model_filename=None):
     inputs.pop('plugin_data',None)
     return inputs
 cleaned=make_prepare_wrapper(clean,lambda x:x,lambda st:st['model_type'])(
-    'state',{'state':{'model_type':'h3_latent_fl2va'},'plugin_data':wrapped})
+    'state',{'state':{'model_type':'minimax_h3_fl2va'},'plugin_data':wrapped})
 assert isinstance(cleaned['plugin_data'],dict)
 assert cleaned['plugin_data'][KEY]['save'] is True
 print('PASS: native model discovery + real State restoration/update/visibility/queue normalization; other plugin data preserved.')
@@ -152,14 +153,14 @@ save_event=next(event for event in app.fns.values() if getattr(event.fn,'_h3_for
 assert len(save_event.inputs)==len(native_inputs)+6
 async def exercise_submission():
     session=SessionState(app)
-    session[state._id]=StateClass(model_type='h3_latent_fl2va')
+    session[state._id]=StateClass(model_type='minimax_h3_fl2va')
     session[plugin_data._id]={KEY:{'save':False},'another_plugin':{'keep':7}}
     await app.process_api(save_event,[None]*len(native_inputs)+[True,False,None,'baseline',35,1.0],state=session)
     st=session[state._id]
-    settings=installed['get_model_settings'](st,'h3_latent_fl2va')
+    settings=installed['get_model_settings'](st,'minimax_h3_fl2va')
     assert options(settings['plugin_data'])['save'] is True
     assert settings['plugin_data']['another_plugin']=={'keep':7}
-    settings.update(state=st,model_type='h3_latent_fl2va')
+    settings.update(state=st,model_type='minimax_h3_fl2va')
     # Reproduce shared plugin_data disappearing AFTER successful form capture.
     settings.pop('plugin_data')
     installed['add_video_task'](**settings)
@@ -167,7 +168,7 @@ async def exercise_submission():
     assert options(task['plugin_data'])['save'] is True
     # A later checkbox change must not modify an already queued task.
     await app.process_api(save_event,[None]*len(native_inputs)+[False,False,None,'baseline',35,1.0],state=session)
-    assert options(installed['get_model_settings'](st,'h3_latent_fl2va')['plugin_data'])['save'] is False
+    assert options(installed['get_model_settings'](st,'minimax_h3_fl2va')['plugin_data'])['save'] is False
     assert options(task['plugin_data'])['save'] is True
     from h3uitest.integration import make_generation_wrapper,make_save_wrapper,make_record_wrapper
     from h3uitest.latent_runtime import LatentMixin,JOB
@@ -210,7 +211,7 @@ async def exercise_submission():
         # Native worker pops the shared payload. A wrapper can also replace it:
         # execution must depend on frozen task options, never on live UI state.
         task.pop('plugin_data')
-        make_generation_wrapper(render,lambda model:model)(task,'h3_latent_fl2va',plugin_data={})
+        make_generation_wrapper(render,lambda model:model)(task,'minimax_h3_fl2va',plugin_data={})
         manifest,loaded=load_checkpoint(destination.with_suffix('.safetensors'))
         assert torch.equal(loaded['video'],original_video)
         assert torch.equal(loaded['audio'],original_audio)
@@ -218,8 +219,8 @@ async def exercise_submission():
         assert JOB.get() is None
     # New controls must take the same proven form -> queue route.
     await app.process_api(save_event,[None]*len(native_inputs)+[True,True,None,'audio_prefix',52,2.0],state=session)
-    experimental=installed['get_model_settings'](st,'h3_latent_fl2va')
-    experimental.update(state=st,model_type='h3_latent_fl2va')
+    experimental=installed['get_model_settings'](st,'minimax_h3_fl2va')
+    experimental.update(state=st,model_type='minimax_h3_fl2va')
     installed['add_video_task'](**experimental)
     from h3uitest.integration import TASK_KEY
     choice=st['gen']['queue'][-1]['params'][TASK_KEY]['options']

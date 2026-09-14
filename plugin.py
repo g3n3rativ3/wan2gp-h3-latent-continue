@@ -3,6 +3,7 @@ import copy
 import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 from .integration import KEY, make_generation_wrapper, make_save_wrapper, make_record_wrapper, make_prepare_wrapper, options, state_mapping
+from .native_bridge import SUPPORTED, install_loader
 from .integration import remember_options, make_settings_wrapper, make_queue_wrapper
 
 
@@ -10,11 +11,12 @@ class H3LatentPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = 'H3 Latent Continue'
-        self.version = '0.2.3'
+        self.version = '0.3.2'
         self.description = 'Single-phase H3 comparative latent continuation in the existing video form.'
         self._bridge_installed = False
 
     def setup_ui(self):
+        install_loader()
         for name in ('state','plugin_data','video_source','image_prompt_type','model_choice'):
             self.request_component(name)
         for name in ('generate_media','save_video','record_file_metadata','prepare_inputs_dict','get_model_settings','add_video_task','get_base_model_type','get_state_model_type'):
@@ -37,7 +39,7 @@ class H3LatentPlugin(WAN2GPPlugin):
         def is_latent_continue(st):
             st = state_mapping(st)
             model = self.get_state_model_type(st) if st and ('model_type' in st or 'edit_model_type' in st) else ''
-            return str(self.get_base_model_type(model)).startswith('h3_latent_')
+            return self.get_base_model_type(model) in SUPPORTED
 
         def create():
             initial_state = getattr(state,'value',{}) or {}
@@ -51,7 +53,7 @@ class H3LatentPlugin(WAN2GPPlugin):
                     latent = gr.File(label='Matching H3 latent checkpoint (.safetensors)',
                                      file_types=['.safetensors'],type='filepath',
                                      value=initial_options['latent_path'] or None)
-                    join_mode = gr.Dropdown(choices=[('Reference (0.1.7)', 'baseline'),
+                    join_mode = gr.Dropdown(choices=[('Reference (minimum 18-frame context)', 'baseline'),
                                                      ('Longer video/audio context', 'context'),
                                                      ('Longer context + frozen audio prefix', 'audio_prefix')],
                                             value=initial_options.get('join_mode','baseline'), label='Join experiment')
@@ -60,7 +62,8 @@ class H3LatentPlugin(WAN2GPPlugin):
                     audio_context = gr.Dropdown(choices=[0.5,1.0,2.0],value=initial_options.get('audio_context_seconds',1.0),
                                                 label='Audio latent context (seconds)')
                     gr.Markdown('For the frozen audio prefix select **No Skipping**. Context is limited to the saved segment; '
-                                'these experiments do not promise a seamless join. Initial clip: use Reference.')
+                                'these experiments do not promise a seamless join. Initial clip: use Reference. '
+                                'Reference retains at least 18 source frames when available, independently of assembly overlap.')
                     gr.Markdown('Keep the source video in the usual **Video to Continue** field. '
                                 'Single phase, same resolution/FPS. Original video + matching checkpoint required.')
             def update_data(saved, enabled, path, existing, session_state, experiment='baseline', video_frames=35, audio_seconds=1.0):

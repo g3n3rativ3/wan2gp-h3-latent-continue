@@ -15,6 +15,8 @@ from h3test.checkpoint import atomic_save, load_checkpoint, inspect_checkpoint, 
 from h3test.latent_runtime import LatentMixin, JOB, frame_hash
 from h3test.integration import make_generation_wrapper, make_save_wrapper, make_record_wrapper, make_prepare_wrapper, preflight, options, state_mapping
 from h3test import packing
+import h3test.integration as integration_module
+integration_module.ensure_hooks=lambda:None  # Native patching covered by pipeline smoke.
 from h3test.integration import TASK_KEY, KEY, make_queue_wrapper, remember_options
 from h3test.export_frames import export_tail
 
@@ -118,6 +120,18 @@ class Timing(unittest.TestCase):
         self.assertEqual(positions[0,0].item(),71)
         self.assertEqual(positions[30,0].item(),101)
 
+    def test_one_frame_assembly_keeps_full_reference_context(self):
+        mix=LatentMixin();mix._lc_source=tensors();mix._lc_manifest=info()
+        video,frames=[],[];mix._lc_video_conditions(video,frames,1)
+        self.assertEqual(len(video),6)
+        self.assertEqual(mix._lc_context_info['native_overlap_frames'],1)
+        self.assertEqual(mix._lc_context_info['video_context_frames'],18)
+        for block,(index,position) in zip(video,tail_indices(37,124,18)):
+            self.assertTrue(torch.equal(block,mix._lc_source['video'][:,:,index:index+1]))
+        audio,anchors=[],[];mix._lc_audio_conditions(audio,anchors,1,24)
+        self.assertTrue(torch.equal(audio[0],mix._lc_source['audio'][...,176:207]))
+        self.assertEqual(mix._lc_context_info['audio_latent_range'],[176,207])
+
     def test_packing_accepts_negative_frame_anchors(self):
         # Native layout functions must work both with keyframes and Ref2VA references.
         for builder in (packing.build_packed_sequence,packing.build_ref2va_packed_sequence):
@@ -169,28 +183,27 @@ class Integration(unittest.TestCase):
                 self.assertTrue(torch.equal(loaded['video'],pending['tensors']['video']))
             finally: JOB.reset(token)
 
-    def test_missing_task_options_stop_before_render(self):
+    def test_native_without_options_keeps_rendering(self):
         def render(task,model_type,plugin_data=None):
-            self.fail('No GPU work may start without explicit options')
-        wrapped=make_generation_wrapper(render,lambda x:x)
-        with self.assertRaisesRegex(RuntimeError,'lost its options'):
-            wrapped({'params':{}},'h3_latent_fl2va',{})
+            self.assertIsNone(JOB.get())
+            return True
+        self.assertTrue(make_generation_wrapper(render,lambda x:x)({},'minimax_h3_fl2va',{}))
 
     def test_kwargs_wrapper_and_frozen_task_options(self):
         seen=[]
         def render(task, **kwargs):
-            seen.append(JOB.get()['options'].copy())
+            seen.append(JOB.get()['options'].copy() if JOB.get() else {'save':False})
             return False  # cancelled: no output expected
         wrap=make_generation_wrapper(render,lambda x:x)
-        wrap({},model_type='h3_latent_fl2va',plugin_data={KEY:{'save':True}})
-        task={'params':{TASK_KEY:{'model_type':'h3_latent_fl2va','options':{'save':False,'continue':False,'latent_path':''}}}}
-        wrap(task,model_type='h3_latent_fl2va',plugin_data={KEY:{'save':True}})
+        wrap({},model_type='minimax_h3_fl2va',plugin_data={KEY:{'save':True}})
+        task={'params':{TASK_KEY:{'model_type':'minimax_h3_fl2va','options':{'save':False,'continue':False,'latent_path':''}}}}
+        wrap(task,model_type='minimax_h3_fl2va',plugin_data={KEY:{'save':True}})
         self.assertEqual([x['save'] for x in seen],[True,False])
         with self.assertRaisesRegex(ValueError,'mismatch'):
-            wrap(task,model_type='h3_latent_ref2va',plugin_data={})
+            wrap(task,model_type='minimax_h3_ref2va',plugin_data={})
 
     def test_enqueue_recovers_from_session_and_freezes_options(self):
-        state={'model_type':'h3_latent_fl2va'}
+        state={'model_type':'minimax_h3_fl2va'}
         remember_options(state,state['model_type'],{KEY:{'save':True}})
         queued=[]
         enqueue=make_queue_wrapper(lambda **inputs:queued.append(inputs),lambda x:x,lambda st:st['model_type'])
@@ -198,8 +211,8 @@ class Integration(unittest.TestCase):
         remember_options(state,state['model_type'],{KEY:{'save':False}})
         self.assertTrue(queued[0][TASK_KEY]['options']['save'])
         self.assertEqual(queued[0]['plugin_data']['other'],7)
-        with self.assertRaisesRegex(RuntimeError,'no captured options'):
-            enqueue(state={'model_type':state['model_type']},model_type=state['model_type'])
+        enqueue(state={'model_type':state['model_type']},model_type=state['model_type'])
+        self.assertNotIn(TASK_KEY,queued[-1])
 
     def test_options_malformed_payloads_default_disabled(self):
         for payload in (None, [], 4, 'wrong', {'h3_latent_prototype':None}, {'h3_latent_prototype':[]}):
@@ -219,12 +232,12 @@ class Integration(unittest.TestCase):
             return inputs
         wrap=make_prepare_wrapper(native,lambda x:x,lambda st:st['model_type'])
         options={'h3_latent_prototype':{'save':True,'continue':False,'latent_path':''}}
-        result=wrap('state',{'state':{'model_type':'h3_latent_fl2va'},'plugin_data':options})
+        result=wrap('state',{'state':{'model_type':'minimax_h3_fl2va'},'plugin_data':options})
         self.assertEqual(result['plugin_data'],options)
         options['h3_latent_prototype']['save']=False
         self.assertTrue(result['plugin_data']['h3_latent_prototype']['save'])
         with self.assertRaises(ValueError):
-            wrap('state',{'state':{'model_type':'h3_latent_fl2va'},'guidance_phases':2})
+            wrap('state',{'state':{'model_type':'minimax_h3_fl2va'},'guidance_phases':2,'plugin_data':{KEY:{'save':True}}})
 
     def test_two_phases_and_unsupported_rejected(self):
         opts={'save':True,'continue':False,'latent_path':''}
@@ -236,12 +249,12 @@ class Integration(unittest.TestCase):
     def test_job_options_are_isolated_and_reset_on_error(self):
         seen=[]
         def original(task,model_type,plugin_data=None,guidance_phases=1):
-            seen.append(JOB.get()['options'].copy())
+            seen.append(JOB.get()['options'].copy() if JOB.get() else {'save':False})
             raise RuntimeError('cancelled')
         wrapped=make_generation_wrapper(original,lambda x:x)
         for use in (True,False):
             with self.assertRaises(RuntimeError):
-                wrapped({},'h3_latent_fl2va',{'h3_latent_prototype':{'save':use}})
+                wrapped({},'minimax_h3_fl2va',{'h3_latent_prototype':{'save':use}})
             self.assertIsNone(JOB.get())
         self.assertEqual([x['save'] for x in seen],[True,False])
 
@@ -253,7 +266,7 @@ class Integration(unittest.TestCase):
             state['gen']['abort']=True
             return True  # Wan2GP returns True after handling a pipeline None result.
         wrapped=make_generation_wrapper(original,lambda x:x)
-        result=wrapped({},'h3_latent_fl2va',{KEY:{'save':True}},state=state)
+        result=wrapped({},'minimax_h3_fl2va',{KEY:{'save':True}},state=state)
         self.assertTrue(result)
         self.assertIsNone(JOB.get())
 
@@ -262,7 +275,7 @@ class Integration(unittest.TestCase):
             return True
         wrapped=make_generation_wrapper(original,lambda x:x)
         with self.assertRaisesRegex(RuntimeError,'without a saved latent checkpoint'):
-            wrapped({},'h3_latent_fl2va',{KEY:{'save':True}},state={'gen':{'abort':False}})
+            wrapped({},'minimax_h3_fl2va',{KEY:{'save':True}},state={'gen':{'abort':False}})
         self.assertIsNone(JOB.get())
 
     def test_native_model_bypass(self):

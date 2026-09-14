@@ -1,3 +1,23 @@
+# 0.3.2
+
+- Reference context no longer collapses to one video latent block when native assembly overlap is one frame: at least 18 frames of available latent AV history are retained.
+- Context selection and native LoRA/cache settings recorded in the checkpoint; no pixel re-encode added.
+- CPU regression covers overlap=1 with unchanged assembly duration. Visual improvement requires a GPU comparison.
+
+# 0.3.1
+
+- Preserve closure-based wrappers without `__wrapped__` by following their captured native function references.
+- Regression test: undecorated closure around native H3 generation, all continuation modes and existing loader/layout tests.
+
+# Changelog
+
+## 0.3.0
+
+- Extension-only integration with native MiniMax H3 models; separate model declarations removed.
+- Local edits to installed native generation, packing and layout; existing delegating wrappers preserved.
+- Original native rendering when options are off; latent operations retain single-phase restrictions and abort handling.
+- Recreate old jobs using native model entries. Existing checkpoint formats and native identities remain readable.
+
 # Historique
 
 ## 0.2.3

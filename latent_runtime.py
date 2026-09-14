@@ -4,7 +4,7 @@ import hashlib
 import math
 import torch
 from .checkpoint import load_checkpoint, tail_indices
-from .seams import seam_settings, audio_window
+from .seams import seam_settings, audio_window, reference_context_frames
 
 JOB = ContextVar('h3_latent_job', default=None)
 
@@ -25,6 +25,7 @@ class LatentMixin:
         self._lc_audio_prefix = None
         self._lc_audio_origin = 0.0
         self._lc_join_mode = 'baseline'
+        self._lc_context_info = {}
         job = JOB.get()
         if int(args.get('guide_phases', 1)) != 1:
             raise ValueError('H3 Latent Continue: use one generation phase.')
@@ -65,16 +66,26 @@ class LatentMixin:
 
     def _lc_video_conditions(self, latents, keyframes, overlap):
         src = self._lc_source['video']
+        native_overlap = overlap
         if getattr(self, '_lc_join_mode', 'baseline') != 'baseline':
             overlap = min(self._lc_video_context, self._lc_manifest['target_frames'])
-        for index, position in tail_indices(src.shape[2],self._lc_manifest['target_frames'],overlap):
+        else:
+            overlap = reference_context_frames(self._lc_manifest['target_frames'], overlap)
+        selected = tail_indices(src.shape[2],self._lc_manifest['target_frames'],overlap)
+        self._lc_context_info = {'native_overlap_frames':int(native_overlap),
+                                 'video_context_frames':int(overlap),
+                                 'video_latent_indices':[i for i, _ in selected],
+                                 'video_frame_positions':[p for _, p in selected]}
+        for index, position in selected:
             latents.append(src[:,:,index:index+1].clone())
             keyframes.append({'anchor':'frame','frame_index':position,'latent_frame_count':1})
         print('[H3 Latent] Video context loaded directly; no VAE re-encode. '
-              f'{len(keyframes)} time-positioned latent blocks.')
+              f'{len(selected)} time-positioned latent blocks; context={overlap} frames, assembly overlap={native_overlap}.')
 
     def _lc_audio_conditions(self, latents, keyframes, overlap, fps):
         src = self._lc_source['audio']
+        if not hasattr(self, '_lc_context_info'):
+            self._lc_context_info = {}
         if getattr(self, '_lc_join_mode', 'baseline') == 'audio_prefix':
             return  # Past sound occupies frozen target rows, not separate guide rows.
         if getattr(self, '_lc_join_mode', 'baseline') == 'context':
@@ -83,6 +94,7 @@ class LatentMixin:
             keyframes.append({'anchor':origin * 40, 'latent_frame_count':stop-start})
             return
         frames = self._lc_manifest['target_frames']
+        overlap = reference_context_frames(frames, overlap)
         # Target frame zero represents the start of the last delivered source frame.
         source_origin = self._lc_manifest.get('audio_origin_seconds', 0.0) * 40
         boundary = (frames-1)*40.0/fps - source_origin
@@ -91,6 +103,7 @@ class LatentMixin:
         if stop > start:
             latents.append(src[...,start:stop].clone())
             keyframes.append({'anchor':float(start-boundary),'latent_frame_count':stop-start})
+            self._lc_context_info['audio_latent_range'] = [int(start), int(stop)]
 
     def _lc_capture(self, video, audio, target_frames, fps, width, height):
         job = JOB.get()
@@ -101,9 +114,10 @@ class LatentMixin:
             'info': {'identity':job['identity'], 'target_frames':int(target_frames),'fps':float(fps),
                      'audio_origin_seconds':getattr(self, '_lc_audio_origin', 0.0),
                      'join_mode':getattr(self, '_lc_join_mode', 'baseline'),
+                     'effective_context':getattr(self, '_lc_context_info', {}),
                      'join_settings':{k:job['options'].get(k) for k in ('video_context_frames','audio_context_seconds')},
                      'width':int(width),'height':int(height),'settings':job['settings'],
-                     'prototype_version':'0.2.3', 'continuation_mode':'latent' if self._lc_source is not None else 'pixels'},
+                     'prototype_version':'0.3.2', 'continuation_mode':'latent' if self._lc_source is not None else 'pixels'},
         }
 
     def _lc_decoded(self, decoded):

@@ -8,6 +8,7 @@ from .checkpoint import atomic_save, inspect_checkpoint, sha256_file
 from .latent_runtime import JOB, frame_hash
 from .export_frames import export_tail
 from .seams import seam_settings
+from .native_bridge import SUPPORTED, ensure_hooks
 
 KEY = 'h3_latent_prototype'
 UI_KEY = '_h3_latent_ui_options'
@@ -24,7 +25,7 @@ def make_queue_wrapper(original, get_base, get_state):
     @functools.wraps(original)
     def enqueue(**inputs):
         model = inputs.get('model_type')
-        if not model or not str(get_base(model)).startswith('h3_latent_'):
+        if not model or not get_base(model) in SUPPORTED:
             return original(**inputs)
         state = state_mapping(inputs.get('state'))
         ui_model = get_state(state) if state else model
@@ -37,7 +38,7 @@ def make_queue_wrapper(original, get_base, get_state):
         if captured is None:
             payload = state_mapping(inputs.get('plugin_data'))
             if KEY not in payload:
-                raise RuntimeError('H3 Latent: no captured options at enqueue. Refresh the page and create a new task; rendering was not started.')
+                return original(**inputs)  # Native jobs without plugin options remain native.
             captured = options(payload)
         frozen = copy.deepcopy(captured)
         inputs[TASK_KEY] = {'model_type':model,'options':frozen}
@@ -83,7 +84,7 @@ def make_settings_wrapper(original, get_base):
     @functools.wraps(original)
     def settings(state, model_type):
         result = original(state, model_type)
-        if result is not None and str(get_base(model_type)).startswith('h3_latent_'):
+        if result is not None and get_base(model_type) in SUPPORTED:
             result = dict(result)
             result['plugin_data'] = merge_ui_options(state, model_type, result.get('plugin_data'))
         return result
@@ -161,7 +162,7 @@ def make_generation_wrapper(original, get_base):
     def generate(*args, **kwargs):
         params = bound_parameters(sig, args, kwargs)
         model = params.get('model_type') or params.get('task', {}).get('params', {}).get('model_type')
-        prototype = str(get_base(model)).startswith('h3_latent_') if model else False
+        prototype = get_base(model) in SUPPORTED if model else False
         if not prototype:
             return original(*args, **kwargs)
         task_params = state_mapping(state_mapping(params.get('task')).get('params'))
@@ -176,11 +177,14 @@ def make_generation_wrapper(original, get_base):
         else:
             payload = state_mapping(params.get('plugin_data'))
             if KEY not in payload:
-                raise RuntimeError('H3 Latent: task has lost its options. Rendering stopped before loading weights. Refresh and create a new task; include Form captured and Queued lines in the report.')
+                return original(*args, **kwargs)
             opts = options(payload)
         print('[H3 Latent] Job options: save=' + str(opts['save'])
               + ', continue=' + str(opts['continue']))
-        # Two phases are never supported by these model entries, including baseline mode.
+        if not (opts['save'] or opts['continue']):
+            return original(*args, **kwargs)
+        ensure_hooks()
+        # Latent operations require one phase; disabled jobs already used the native path.
         if int(params.get('guidance_phases',1)) != 1:
             raise ValueError('H3 Latent Continue supports SINGLE-PHASE rendering only.')
         preflight(params, opts)
@@ -250,6 +254,11 @@ def make_record_wrapper(original):
         info['video_sha256'] = sha256_file(path)
         configs = arguments.get('configs', {})
         info['loras'] = {k:configs.get(k) for k in ('transformer_loras_filenames','transformer_loras_multipliers')}
+        # Native metadata may store the UI keys instead of resolved LoRA paths.
+        info['loras']['activated_loras'] = configs.get('activated_loras')
+        info['loras']['loras_multipliers'] = configs.get('loras_multipliers')
+        info['acceleration'] = {k:configs.get(k) for k in
+                                ('skip_steps_cache_type','skip_steps_multiplier','skip_steps_start_step_perc')}
         info['source_video'] = Path(job['source']).name if job['source'] else None
         destination = path.with_suffix('.safetensors')
         atomic_save(destination, pending['tensors'], info)
@@ -268,9 +277,9 @@ def make_prepare_wrapper(original, get_base, get_state):
     @functools.wraps(original)
     def prepare(target, inputs, model_type=None, model_filename=None):
         model = model_type or get_state(inputs['state'])
-        prototype = str(get_base(model)).startswith('h3_latent_')
+        prototype = get_base(model) in SUPPORTED
         data = merge_ui_options(inputs.get('state'), model, inputs.get('plugin_data'))
-        if prototype and int(inputs.get('guidance_phases',1)) != 1:
+        if prototype and any(options(data)[k] for k in ('save','continue')) and int(inputs.get('guidance_phases',1)) != 1:
             raise ValueError('H3 Latent Continue supports SINGLE-PHASE rendering only; change the source settings explicitly.')
         result = original(target, inputs, model_type, model_filename)
         if prototype and target in ('state','edit_state','settings'):
