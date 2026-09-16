@@ -90,6 +90,10 @@ with gr.Blocks() as app:
         native_inputs.append(component)
     generate=gr.Button('Generate')
     generate.click(native['save_inputs'],inputs=native_inputs,outputs=None)
+    def return_imported_state(st):
+        return st
+    imported=gr.Button('Return imported queue state')
+    imported.click(return_imported_state,inputs=state,outputs=state)
     components=dict(state=state,plugin_data=plugin_data,image_prompt_type=image_prompt_type,
                     model_choice=model_choice,video_source=video_source)
     manager.run_component_insertion_and_setup(components)
@@ -166,6 +170,13 @@ async def exercise_submission():
     installed['add_video_task'](**settings)
     task=st['gen']['queue'][0]
     assert options(task['plugin_data'])['save'] is True
+    # Native queued/imported tasks reference their owning state. Gradio must
+    # not deep-hash this cyclic graph when a native event returns the state.
+    assert task['params']['state'] is st
+    import_event=next(fn for fn in app.fns.values() if fn.fn is return_imported_state)
+    for _ in range(2):
+        await app.process_api(import_event,[None],state=session)
+    assert session[state._id]['gen']['queue'][0]['params']['state'] is st
     # A later checkbox change must not modify an already queued task.
     await app.process_api(save_event,[None]*len(native_inputs)+[False,False,None,'baseline',35,1.0],state=session)
     assert options(installed['get_model_settings'](st,'minimax_h3_fl2va')['plugin_data'])['save'] is False

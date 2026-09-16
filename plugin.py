@@ -11,7 +11,7 @@ class H3LatentPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = 'H3 Latent Continue'
-        self.version = '0.3.2'
+        self.version = '0.3.3'
         self.description = 'Single-phase H3 comparative latent continuation in the existing video form.'
         self._bridge_installed = False
 
@@ -78,7 +78,10 @@ class H3LatentPlugin(WAN2GPPlugin):
             def visibility(st, flags):
                 supported = is_latent_continue(st)
                 return gr.update(visible=supported), gr.update(visible=supported and 'V' in str(flags or ''))
-            gr.on(triggers=[mode.change,state.change],fn=visibility,inputs=[state,mode],outputs=[panel,continuation],queue=False)
+            # Native queues reference their owning state. A state.change listener
+            # makes Gradio deep-hash that cyclic graph on import and recurse.
+            # Reading state as an input is safe; subscribe to scalar controls only.
+            gr.on(triggers=[mode.change],fn=visibility,inputs=[state,mode],outputs=[panel,continuation],queue=False)
             # Model selection may change without rebuilding the complete form.
             if 'model_choice' in components:
                 components['model_choice'].change(fn=visibility,inputs=[state,mode],outputs=[panel,continuation],queue=False)

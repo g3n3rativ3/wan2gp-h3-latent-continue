@@ -1,3 +1,9 @@
+# 0.3.3
+
+- Remove global state.change subscription, which triggered recursive Gradio hashing on native queued/imported state.
+- Keep model/mode-driven visibility and all generation behaviour.
+- Reproduce the previous RecursionError and test repeated state-return callbacks after native queue creation.
+
 # 0.3.2
 
 - Reference context no longer collapses to one video latent block when native assembly overlap is one frame: at least 18 frames of available latent AV history are retained.

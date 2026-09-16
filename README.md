@@ -1,6 +1,6 @@
 # H3 Latent Continue for Wan2GP
 
-Version **0.3.2**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
+Version **0.3.3**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
 
 ## Version 0.2.3: safe user abort
 
@@ -11,6 +11,14 @@ Aborting an active generation now discards any incomplete latent capture and ret
 Latent hook installation now follows captured function references as well as standard `__wrapped__` links. This supports plugins that wrap native H3 methods in closures without using `functools.wraps`. The wrapper and its captured state remain intact; the reachable native body receives the latent edits. If no unique matching native body can be reached, installation stops before changing any method instead of guessing.
 
 CPU regression testing uses an undecorated closure around the installed native H3 generate method and checks that it still runs before and after all three continuation modes. This simulates the reported wrapper pattern; it does not validate the exact third-party plugins from the user's installation.
+
+## Version 0.3.3: settings import recursion fix
+
+Removed the plugin's listener on the global Gradio `state.change` event. Native queued/imported tasks reference their owning state, producing a cycle. That listener caused Gradio to recursively hash the entire state whenever a native callback returned it, raising `RecursionError` even with both latent options disabled.
+
+Panel visibility still follows model selection and video-mode changes. The plugin still reads state as an input but no longer subscribes to its change events. No native state data is removed and Gradio's hashing function is not modified. Restart Wan2GP after replacing the plugin directory, then import the existing settings archive again; re-exporting should not be necessary for this failure.
+
+The regression test first reproduced the failure on 0.3.2, then verified repeated Gradio callbacks returning the real native queued state without recursion. Full Stability Matrix startup and the reporting user's archive were not available locally. Generation and the minimum 18-frame context remain unchanged.
 
 ## Version 0.3.2: minimum latent history (comparative fix)
 
