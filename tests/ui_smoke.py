@@ -94,10 +94,16 @@ with gr.Blocks() as app:
         return st
     imported=gr.Button('Return imported queue state')
     imported.click(return_imported_state,inputs=state,outputs=state)
+    def return_imported_data(st, payload):
+        return st, payload
+    imported_data=gr.Button('Return shared import data')
+    imported_data.click(return_imported_data,inputs=[state,plugin_data],outputs=[state,plugin_data])
     components=dict(state=state,plugin_data=plugin_data,image_prompt_type=image_prompt_type,
                     model_choice=model_choice,video_source=video_source)
     manager.run_component_insertion_and_setup(components)
 config=app.get_config_file()
+assert not any((comp._id,'change') in event.targets
+               for comp in (state,plugin_data) for event in app.fns.values())
 checkboxes=[x for x in config['components'] if x['type']=='checkbox']
 assert len(checkboxes)==2,checkboxes
 assert all(x['props']['value'] is False for x in checkboxes)
@@ -160,6 +166,23 @@ async def exercise_submission():
     session[state._id]=StateClass(model_type='minimax_h3_fl2va')
     session[plugin_data._id]={KEY:{'save':False},'another_plugin':{'keep':7}}
     await app.process_api(save_event,[None]*len(native_inputs)+[True,False,None,'baseline',35,1.0],state=session)
+    # Reproduce the OTHER shared-state cycle missed by 0.3.3's state-only test.
+    payload={KEY:{'save':True,'continue':False},'foreign':{}}
+    payload['foreign']['self']=payload['foreign']
+    session[plugin_data._id]=payload
+    import_data_event=next(fn for fn in app.fns.values() if fn.fn.__name__=='return_imported_data')
+    restore_event=next(fn for fn in app.fns.values() if fn.fn.__name__=='restore')
+    for _ in range(2):
+        refresh=await app.process_api(import_data_event,[None,None],state=session)
+        assert refresh['data'][-1], 'Scalar refresh notification missing'
+        restored=await app.process_api(restore_event,[None],state=session)
+        assert restored['data'][:2]==[True,False]
+        assert session[plugin_data._id]['foreign']['self'] is session[plugin_data._id]['foreign']
+    update_event=next(fn for fn in app.fns.values() if fn.fn.__name__=='update_data')
+    await app.process_api(update_event,[True,False,None,None,None,'baseline',35,1.0],state=session)
+    assert session[plugin_data._id]['foreign']['self'] is session[plugin_data._id]['foreign']
+    session[plugin_data._id]={KEY:{'save':False},'another_plugin':{'keep':7}}
+    print('PASS: repeated cyclic plugin_data import + option restoration, foreign cycle preserved')
     st=session[state._id]
     settings=installed['get_model_settings'](st,'minimax_h3_fl2va')
     assert options(settings['plugin_data'])['save'] is True

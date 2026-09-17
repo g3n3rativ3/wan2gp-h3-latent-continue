@@ -11,7 +11,7 @@ class H3LatentPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = 'H3 Latent Continue'
-        self.version = '0.3.3'
+        self.version = '0.3.4'
         self.description = 'Single-phase H3 comparative latent continuation in the existing video form.'
         self._bridge_installed = False
 
@@ -46,6 +46,7 @@ class H3LatentPlugin(WAN2GPPlugin):
             active = is_latent_continue(initial_state)
             initial_options = options(getattr(data,'value',{}) or {})
             with gr.Column(visible=active) as panel:
+                refresh_signal = gr.Textbox(value='', visible=False)
                 save = gr.Checkbox(value=initial_options['save'], label='Save latent checkpoint next to output video')
                 with gr.Accordion('Continue with latent',open=False,
                                   visible='V' in str(getattr(mode,'value','') or '')) as continuation:
@@ -91,10 +92,15 @@ class H3LatentPlugin(WAN2GPPlugin):
                 opts = options(existing)
                 return (opts['save'],opts['continue'],opts['latent_path'] or None,
                         opts.get('join_mode','baseline'),opts.get('video_context_frames',35),opts.get('audio_context_seconds',1.0))
-            data.change(fn=restore,inputs=[data],outputs=[save,use,latent,join_mode,video_context,audio_context],queue=False)
+            # Watching shared State asks Gradio to recursively hash foreign data.
+            # Native writers emit only a scalar notification; restoration reads
+            # the payload without registering a change listener on either State.
+            refresh_signal.change(fn=restore,inputs=[data],outputs=[save,use,latent,join_mode,video_context,audio_context],queue=False)
             from gradio.context import get_blocks_context
             from .form_bridge import bind_form_events
             count = bind_form_events(get_blocks_context(), data, [save,use,latent,join_mode,video_context,audio_context], self.get_state_model_type)
+            from .refresh_bridge import bind_refresh_events
+            bind_refresh_events(get_blocks_context(), data, refresh_signal, exclude=(update_data,))
             print(f'[H3 Latent] Inline controls connected to {count} native form event(s).')
             return panel
         self.insert_after('video_source',create)

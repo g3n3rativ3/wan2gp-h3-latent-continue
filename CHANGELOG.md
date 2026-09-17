@@ -1,3 +1,10 @@
+# 0.3.4
+
+- Remove the remaining shared plugin_data.change subscription.
+- Restore controls through scalar notifications from existing form-data writers.
+- Preserve foreign payloads and callback execution style; no inference changes.
+- Add cyclic plugin-data regression and refresh adapter contract tests.
+
 # 0.3.3
 
 - Remove global state.change subscription, which triggered recursive Gradio hashing on native queued/imported state.

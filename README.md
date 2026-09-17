@@ -1,6 +1,35 @@
 # H3 Latent Continue for Wan2GP
 
-Version **0.3.3**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
+Version **0.3.4**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
+
+## Version 0.3.4: shared plugin-data import recursion
+
+Version 0.3.3 removed the global `state.change` listener but still listened to
+`plugin_data.change`. This second object is shared with other extensions. If it
+contains a cycle, Gradio recursively hashes it before an import/refresh callback
+runs and raises `RecursionError`, even with both latent options disabled.
+
+This release removes that listener too. Existing callbacks that write this form's
+plugin data also emit a hidden, scalar refresh token. Its change event restores
+the six latent controls by reading the payload without asking Gradio to hash it.
+The plugin does not delete foreign data, patch Gradio's hashing, or raise Python's
+recursion limit. Sync, async and generator callbacks retain their execution style.
+The checkbox input callbacks still capture options directly; queued task snapshots
+and all inference/continuation algorithms remain unchanged.
+
+The remaining 0.3.3 failure is reproduced with cyclic shared plugin data in real
+Gradio 5.29.0. This is a mechanism-level regression, not a reproduction of the
+reporter's unavailable export or complete installation. If another extension
+independently subscribes to a cyclic State, that extension can still cause the
+same Gradio error; this release removes only this plugin's subscriptions.
+
+### Update
+
+Stop Wan2GP completely. Replace `plugins/wan2gp-h3-latent-continue` with the folder
+from this ZIP (keep any backup outside `plugins`), then restart. This cleans up
+obsolete files from older model-plugin releases as well as installing the fix.
+Reinstallation of unchanged 0.3.3 files is not the fix. Retry the existing settings
+export; no GPU render or new export should be needed to check the import.
 
 ## Version 0.2.3: safe user abort
 

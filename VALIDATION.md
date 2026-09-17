@@ -1,3 +1,14 @@
+# 0.3.4 shared plugin-data regression
+
+- Compared the reporter's plugin ZIP against released 0.3.3: all 25 release files match after CRLF normalization. Obsolete extra model files are not referenced by the active extension.
+- Read native Wan2GP 13.0 import/form refresh output wiring and Gradio 5.29.0 get_state_ids_to_track. A State change listener causes recursive hashing before the callback executes; adding a try/except inside the restore callback would be too late.
+- Reproduced RecursionError in Gradio utils.deep_hash using the unchanged 0.3.3 plugin and a cyclic foreign dictionary in shared plugin_data. The previous 0.3.3 test covered only the global task state and missed this second state object.
+- The identical cyclic payload succeeds with the new scalar notification bridge. Repeated refreshes restore the controls, and foreign cycles remain intact. Neither shared State has a plugin change listener.
+- 38 CPU unit tests pass, including callback styles, skips, component-keyed output dictionaries, multiple outputs, idempotence and form isolation.
+- Actual Gradio/native plugin API smoke test passes on supplied Wan2GP 13.0: form insertion, option capture, queue snapshots, global cyclic state, cyclic plugin_data restoration, and CPU sidecar writing with a fake video encoder.
+
+The reporter's exported archive, exact Wan2GP/Gradio versions and other extensions were unavailable. This confirms a remaining plugin defect and its mechanism-level fix, not the exact origin of the reporter's circular data. No full browser or GPU generation test was performed for this UI-only fix. No inference algorithm changed. Other plugins independently watching cyclic State objects remain outside this fix.
+
 # 0.3.3 settings import regression
 
 The added Gradio regression fails on 0.3.2 with RecursionError in utils.deep_hash. It creates a task using the supplied native add_video_task body, asserts task.params.state points to the owning state, and invokes a Gradio callback returning that state twice. Removing the global state.change listener allows both calls to complete. This reproduces the cyclic-state failure mechanism, not an end-to-end import of the reporter's unavailable ZIP.

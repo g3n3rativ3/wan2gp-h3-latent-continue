@@ -1,6 +1,6 @@
 {
   "name": "H3 Latent Continue",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Latent continuation on native MiniMax H3 models in the existing video form",
   "type": "extension"
 }
