@@ -54,7 +54,7 @@ class LatentMixin:
             if self._lc_join_mode == 'audio_prefix':
                 if self.transformer.cache is not None:
                     raise ValueError('H3 Latent audio-prefix mode: disable all step caches (No Skipping).')
-                if args.get('audio_guide') is not None or args.get('audio_guide2') is not None:
+                if any(args.get(key) is not None for key in ('audio_guide','audio_guide2','audio_guide3')):
                     raise ValueError('H3 Latent audio-prefix mode does not support additional audio guides.')
                 start, stop, self._lc_audio_origin = audio_window(info, tensors['audio'].shape[-1], self._lc_audio_seconds)
                 self._lc_audio_prefix = tensors['audio'][...,start:stop].clone()
@@ -117,7 +117,7 @@ class LatentMixin:
                      'effective_context':getattr(self, '_lc_context_info', {}),
                      'join_settings':{k:job['options'].get(k) for k in ('video_context_frames','audio_context_seconds')},
                      'width':int(width),'height':int(height),'settings':job['settings'],
-                     'prototype_version':'0.3.4', 'continuation_mode':'latent' if self._lc_source is not None else 'pixels'},
+                     'prototype_version':'0.3.5', 'continuation_mode':'latent' if self._lc_source is not None else 'pixels'},
         }
 
     def _lc_decoded(self, decoded):

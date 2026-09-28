@@ -1,6 +1,36 @@
 # H3 Latent Continue for Wan2GP
 
-Version **0.3.4**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
+Version **0.3.5**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
+
+## Version 0.3.5: Wan2GP 13.14 setting validation
+
+Wan2GP now rejects unrecognized top-level generation settings. Older plugin
+versions stored `_h3_latent_task_options_v1` there even when both latent options
+were disabled. That caused the reported "Unknown setting" error before rendering.
+
+Options now travel inside native `plugin_data`. Queued jobs also retain an
+independent snapshot in their task envelope, outside generation parameters, so
+the native worker can pop plugin_data without losing the selected options.
+Task editing and imported runtime tasks normalize this transport before dispatch,
+avoiding duplicate plugin_data keyword arguments. Legacy snapshots are migrated
+when they reach the wrapped native validation/settings/import boundaries. Native
+validation still rejects unrelated unknown settings; no catalog entries, hashes
+or version allowlists are added. Jobs with both latent options disabled use the
+native renderer, including fused Turbo catalog variants.
+
+Compatibility was checked against the supplied **Wan2GP 13.14** source and its
+pinned **Gradio 5.29.0**. The native H3 pipeline, packing and layout injections pass
+CPU tests in all three continuation modes. The new cooperative inference
+checkpoint remains native. The frozen-audio-prefix restriction now includes the
+new third audio guide. Kept-soundtrack modes (`AS` / `KS`) are explicitly rejected
+only when latent operations are enabled: the final audio may differ from decoded
+inference audio, so these modes cannot promise a matching AV checkpoint.
+
+Existing safetensors formats are unchanged. Stop Wan2GP, replace the plugin folder
+with this release, and restart. Retry generation with both options unchecked
+first. Old options reaching the migration hooks do not require manual editing.
+This is CPU/source-level validation, not a GPU-quality or complete third-party
+plugin interoperability certification. See VALIDATION.md and tests/settings_smoke.py.
 
 ## Version 0.3.4: shared plugin-data import recursion
 

@@ -36,6 +36,15 @@ namespace=dict(torch=torch,np=np,F=F,math=math,os=os,functools=functools,hashlib
                tqdm=lambda it,**kw:it)
 exec((upstream/'models/minimax_h3/constants.py').read_text(),namespace)
 exec((upstream/'shared/utils/frame_scheduler.py').read_text(),namespace)
+# Native cooperative checkpoint has no active controller in this CPU harness.
+try:
+    from shared.utils.media_control import inference_checkpoint
+except ImportError:
+    inference_checkpoint = lambda: None
+namespace['inference_checkpoint'] = inference_checkpoint
+excerpts_path=upstream/'models/minimax_h3/excerpts.py'
+if excerpts_path.exists():
+    exec(excerpts_path.read_text(), namespace)
 namespace['patchify_video']=patchify_video_latents
 namespace['pack_audio']=lambda latent:latent[0].permute(1,2,0).reshape(-1,32).contiguous()
 namespace['unpack_audio']=lambda rows:rows.reshape(2,-1,32).permute(2,0,1).unsqueeze(0)

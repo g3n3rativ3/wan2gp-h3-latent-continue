@@ -34,6 +34,7 @@ def bind_form_events(context, data_component, controls, get_model):
                 captured = dict(payload[KEY])
                 state = bound.arguments['state']
                 model = get_model(state_mapping(state))
+                payload[TASK_KEY] = {'model_type':model,'options':captured}
                 remember_options(state, model, payload)
                 bound.arguments['plugin_data'] = payload
                 print(f'[H3 Latent] Form captured: save={bool(saved)}, continue={bool(enabled)}, model={model}')
@@ -43,7 +44,8 @@ def bind_form_events(context, data_component, controls, get_model):
                 current = state_mapping(state)
                 settings = current.get('edit_state') if target == 'edit_state' else current.get('all_settings', {}).get(model)
                 if target in ('state','edit_state') and isinstance(settings,dict):
-                    settings[TASK_KEY] = {'model_type':model,'options':captured}
+                    settings.pop(TASK_KEY, None)
+                    settings.setdefault('plugin_data', {})[TASK_KEY] = {'model_type':model,'options':captured}
                 return result
             save_form._h3_form_bound = True
             return save_form

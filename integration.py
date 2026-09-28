@@ -15,8 +15,22 @@ UI_KEY = '_h3_latent_ui_options'
 TASK_KEY = '_h3_latent_task_options_v1'
 
 
+def migrate_task_options(settings):
+    """Move our legacy transport key into the native plugin_data namespace.
+
+    Do not relax WanGP validation or touch other extensions' settings.
+    """
+    import copy
+    result = dict(settings)
+    if TASK_KEY in result:
+        payload = state_mapping(result.get('plugin_data'))
+        payload.setdefault(TASK_KEY, copy.deepcopy(result.pop(TASK_KEY)))
+        result['plugin_data'] = payload
+    return result
+
+
 def make_queue_wrapper(original, get_base, get_state):
-    """Freeze the captured selection in task params before native enqueue.
+    """Freeze the selection in plugin_data and the runtime task envelope.
 
     plugin_data is mutable shared plumbing and is popped by queue_worker_func.
     This independent, JSON-safe record belongs to the queued task, not the UI.
@@ -24,12 +38,13 @@ def make_queue_wrapper(original, get_base, get_state):
     import copy
     @functools.wraps(original)
     def enqueue(**inputs):
+        inputs = migrate_task_options(inputs)
         model = inputs.get('model_type')
         if not model or not get_base(model) in SUPPORTED:
             return original(**inputs)
         state = state_mapping(inputs.get('state'))
         ui_model = get_state(state) if state else model
-        stored = inputs.get(TASK_KEY)
+        stored = state_mapping(inputs.get('plugin_data')).get(TASK_KEY)
         captured = stored.get('options') if isinstance(stored,dict) and stored.get('model_type') == model else None
         if captured is None:
             captured = state.get(UI_KEY, {}).get(ui_model)
@@ -41,12 +56,21 @@ def make_queue_wrapper(original, get_base, get_state):
                 return original(**inputs)  # Native jobs without plugin options remain native.
             captured = options(payload)
         frozen = copy.deepcopy(captured)
-        inputs[TASK_KEY] = {'model_type':model,'options':frozen}
         payload = copy.deepcopy(state_mapping(inputs.get('plugin_data')))
         payload[KEY] = copy.deepcopy(frozen)
+        payload[TASK_KEY] = {'model_type':model,'options':copy.deepcopy(frozen)}
         inputs['plugin_data'] = payload
         print(f'[H3 Latent] Queued model={model}: save={frozen["save"]}, continue={frozen["continue"]}')
-        return original(**inputs)
+        queue = state.get('gen', {}).get('queue', [])
+        previous = len(queue)
+        result = original(**inputs)
+        # Native enqueue removes plugin_data from params; keep an independent
+        # snapshot outside generation parameters for retries.
+        queue = state_mapping(inputs.get('state')).get('gen', {}).get('queue', [])
+        for task in queue[previous:]:
+            if task.get('plugin_data') is payload:
+                task[TASK_KEY] = copy.deepcopy(payload[TASK_KEY])
+        return result
     return enqueue
 
 
@@ -77,6 +101,7 @@ def merge_ui_options(state, model, data):
     snapshot = state_mapping(state).get(UI_KEY, {}).get(model)
     if snapshot is not None:
         result[KEY] = copy.deepcopy(snapshot)
+        result[TASK_KEY] = {'model_type':model,'options':copy.deepcopy(snapshot)}
     return result
 
 
@@ -84,9 +109,10 @@ def make_settings_wrapper(original, get_base):
     @functools.wraps(original)
     def settings(state, model_type):
         result = original(state, model_type)
-        if result is not None and get_base(model_type) in SUPPORTED:
-            result = dict(result)
-            result['plugin_data'] = merge_ui_options(state, model_type, result.get('plugin_data'))
+        if result is not None:
+            result = migrate_task_options(result)
+            if get_base(model_type) in SUPPORTED:
+                result['plugin_data'] = merge_ui_options(state, model_type, result.get('plugin_data'))
         return result
     return settings
 
@@ -118,6 +144,8 @@ def options(data):
 
 def preflight(params, opts):
     if not (opts['save'] or opts['continue']): return
+    if 'S' in str(params.get('audio_prompt_type') or ''):
+        raise ValueError('H3 Latent Continue: kept soundtracks are unsupported with latent operations; use generated audio.')
     join_mode, _, _ = seam_settings(opts)
     if join_mode != 'baseline' and not opts['continue']:
         raise ValueError('H3 Latent: experimental join modes require Continue with latent; use baseline for the initial clip.')
@@ -166,7 +194,9 @@ def make_generation_wrapper(original, get_base):
         if not prototype:
             return original(*args, **kwargs)
         task_params = state_mapping(state_mapping(params.get('task')).get('params'))
-        snapshot = task_params.get(TASK_KEY)
+        snapshot = state_mapping(params.get('task')).get(TASK_KEY, task_params.get(TASK_KEY))
+        if snapshot is None:
+            snapshot = state_mapping(params.get('plugin_data')).get(TASK_KEY)
         if snapshot is not None:
             if not isinstance(snapshot, dict) or snapshot.get('model_type') != model:
                 raise ValueError('H3 Latent: task options/model mismatch; recreate this task.')
@@ -276,6 +306,7 @@ def make_prepare_wrapper(original, get_base, get_state):
     import copy
     @functools.wraps(original)
     def prepare(target, inputs, model_type=None, model_filename=None):
+        inputs = migrate_task_options(inputs)
         model = model_type or get_state(inputs['state'])
         prototype = get_base(model) in SUPPORTED
         data = merge_ui_options(inputs.get('state'), model, inputs.get('plugin_data'))
@@ -286,3 +317,55 @@ def make_prepare_wrapper(original, get_base, get_state):
             result['plugin_data'] = data
         return result
     return prepare
+
+
+def normalize_runtime_task(task):
+    """Transport belongs to the task envelope, never generation keyword args."""
+    import copy
+    params = task.get('params', {})
+    data = state_mapping(params.get('plugin_data'))
+    if TASK_KEY in params or TASK_KEY in data or KEY in data:
+        params = migrate_task_options(params)
+        data = state_mapping(params.pop('plugin_data', {}))
+        payload = state_mapping(task.get('plugin_data'))
+        payload.update(data)
+        task['params'] = params
+        task['plugin_data'] = payload
+    payload = state_mapping(task.get('plugin_data'))
+    if TASK_KEY in payload:
+        task[TASK_KEY] = copy.deepcopy(payload[TASK_KEY])
+    return task
+
+
+def make_runtime_task_wrapper(original):
+    @functools.wraps(original)
+    def build(*args, **kwargs):
+        return normalize_runtime_task(original(*args, **kwargs))
+    return build
+
+
+def make_edit_wrapper(original):
+    @functools.wraps(original)
+    def edit(state, *args, **kwargs):
+        edited_id = state.get('editing_task_id')
+        edited_params = state.get('edit_state')
+        result = original(state, *args, **kwargs)
+        for task in state.get('gen', {}).get('queue', []):
+            if task.get('id') == edited_id and task.get('params') is edited_params:
+                normalize_runtime_task(task)
+        return result
+    return edit
+
+
+def make_validation_wrapper(original):
+    sig = inspect.signature(original)
+    @functools.wraps(original)
+    def validate(*args, **kwargs):
+        bound = sig.bind(*args, **kwargs)
+        inputs = bound.arguments.get('inputs')
+        if isinstance(inputs, dict) and TASK_KEY in inputs:
+            migrated = migrate_task_options(inputs)
+            inputs.pop(TASK_KEY)
+            inputs['plugin_data'] = migrated['plugin_data']
+        return original(*bound.args, **bound.kwargs)
+    return validate

@@ -1,3 +1,14 @@
+# 0.3.5 — Wan2GP 13.14 compatibility
+
+Supplied source: Wan2GP-main(3).zip, wgp.py WanGP_version 13.14, Gradio requirement 5.29.0.
+
+- settings_smoke.py uses the actual supplied setting_names validator and native validate_settings body: reproduces the old unknown-key failure, then confirms migration reaches native model validation. Unrelated unknown keys remain rejected.
+- Tests enabled/disabled snapshots with the reported fused Turbo model ID resolved to its native base. Native add_video_task and _build_runtime_task bodies are executed; task edits, imported legacy payloads, option immutability and the worker's explicit plugin_data plus filtered-params calling convention are checked.
+- 38 CPU unit tests pass (checkpoint, options, abort, frame export, seam geometry and refresh bridge).
+- Actual Gradio UI smoke passes against supplied 13.14: form insertion, cyclic-state refresh regression, queue snapshots and safetensors sidecar with a fake encoder.
+- Native pipeline smoke passes against supplied 13.14: generation, three latent continuation modes, minimum 18-frame history for overlap=1, frozen prefix preservation, sample counts, no AV re-encoding, existing wrapper chains, packing/layout caching and native loader class retention. The harness supplies the newly imported native inference_checkpoint and excerpts helpers; it does not replace production code.
+- Kept soundtrack guard is tested enabled/disabled. No full GPU render, full browser session, actual third-party plugins, or exhaustive new H3 reference combinations were tested.
+
 # 0.3.4 shared plugin-data regression
 
 - Compared the reporter's plugin ZIP against released 0.3.3: all 25 release files match after CRLF normalization. Obsolete extra model files are not referenced by the active extension.

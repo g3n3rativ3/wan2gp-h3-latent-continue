@@ -69,6 +69,9 @@ if hybrid.exists():
     StateClass=native['SharedState']
 exec(compile(native_tree,str(wangp/'wgp.py'),'exec'),native)
 plugin.add_video_task=native['add_video_task']
+plugin.validate_settings=lambda state,model_type,single_prompt,inputs,silent=False:inputs
+plugin._build_runtime_task=lambda ident,params,plugin_data=None:dict(id=ident,params=params,plugin_data=plugin_data or {})
+plugin.edit_task_in_queue=lambda state:None
 native['prepare_inputs_dict']=lambda *args:installed['prepare_inputs_dict'](*args)
 manager=PluginManager.__new__(PluginManager);manager.plugins={'prototype':plugin}
 manager.plugins_dir=str(ROOT.parent)
@@ -112,11 +115,11 @@ assert any(x['type']=='file' and x['props']['file_types']==['.safetensors'] for 
 assert parent.children[0] is video_source
 assert type(parent.children[1]).__name__=='Column'
 assert following in getattr(parent.children[-1],'children',[])
-assert set(installed)=={'generate_media','save_video','record_file_metadata','prepare_inputs_dict','get_model_settings','add_video_task'}
+assert set(installed)=={'generate_media','save_video','record_file_metadata','prepare_inputs_dict','get_model_settings','add_video_task','validate_settings','_build_runtime_task','edit_task_in_queue'}
 # Updating backend state cannot recursively retrigger the user-only option handlers.
 updates=[dep for dep in config['dependencies'] if any(event in ('input','upload','clear') for _,event in dep['targets'])]
 assert len(updates)==1
-print('PASS: native insertion, Gradio '+gr.__version__+', two unchecked options, latent upload, no new tab, 6 lifecycle bridges.')
+print('PASS: native insertion, Gradio '+gr.__version__+', two unchecked options, latent upload, no new tab, 9 lifecycle bridges.')
 
 # Reproduce the reported callback input using REAL Gradio State objects.
 callbacks={fn.fn.__name__:fn.fn for fn in app.fns.values() if fn.fn is not None}
@@ -257,7 +260,7 @@ async def exercise_submission():
     experimental.update(state=st,model_type='minimax_h3_fl2va')
     installed['add_video_task'](**experimental)
     from h3uitest.integration import TASK_KEY
-    choice=st['gen']['queue'][-1]['params'][TASK_KEY]['options']
+    choice=st['gen']['queue'][-1][TASK_KEY]['options']
     assert (choice['join_mode'],choice['video_context_frames'],choice['audio_context_seconds'])==('audio_prefix',52,2.0)
 asyncio.run(exercise_submission())
 print('PASS: actual Gradio process_api -> native save_inputs -> settings -> native add_video_task; stale data, disable, queued snapshot.')

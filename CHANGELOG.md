@@ -1,3 +1,11 @@
+# 0.3.5
+
+- Support Wan2GP 13.14 strict top-level setting validation: move snapshots into plugin_data and the runtime task envelope.
+- Migrate legacy snapshots at native boundaries; preserve disabled passthrough, queued options, imports and task edits without duplicate keyword arguments.
+- Retain native unknown-setting rejection and existing local H3 injection checks.
+- Extend frozen audio-prefix guard to audio_guide3; reject kept soundtracks only for active latent operations.
+- Validate latest native H3 pipeline/packing/layout with CPU stand-ins and native Gradio form/queue/export wiring.
+
 # 0.3.4
 
 - Remove the remaining shared plugin_data.change subscription.

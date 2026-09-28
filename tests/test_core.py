@@ -209,7 +209,7 @@ class Integration(unittest.TestCase):
         enqueue=make_queue_wrapper(lambda **inputs:queued.append(inputs),lambda x:x,lambda st:st['model_type'])
         enqueue(state=state,model_type=state['model_type'],plugin_data={'other':7})
         remember_options(state,state['model_type'],{KEY:{'save':False}})
-        self.assertTrue(queued[0][TASK_KEY]['options']['save'])
+        self.assertTrue(queued[0]['plugin_data'][TASK_KEY]['options']['save'])
         self.assertEqual(queued[0]['plugin_data']['other'],7)
         enqueue(state={'model_type':state['model_type']},model_type=state['model_type'])
         self.assertNotIn(TASK_KEY,queued[-1])

@@ -4,14 +4,14 @@ import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 from .integration import KEY, make_generation_wrapper, make_save_wrapper, make_record_wrapper, make_prepare_wrapper, options, state_mapping
 from .native_bridge import SUPPORTED, install_loader
-from .integration import remember_options, make_settings_wrapper, make_queue_wrapper
+from .integration import make_validation_wrapper, make_runtime_task_wrapper, make_edit_wrapper, remember_options, make_settings_wrapper, make_queue_wrapper
 
 
 class H3LatentPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = 'H3 Latent Continue'
-        self.version = '0.3.4'
+        self.version = '0.3.5'
         self.description = 'Single-phase H3 comparative latent continuation in the existing video form.'
         self._bridge_installed = False
 
@@ -19,7 +19,7 @@ class H3LatentPlugin(WAN2GPPlugin):
         install_loader()
         for name in ('state','plugin_data','video_source','image_prompt_type','model_choice'):
             self.request_component(name)
-        for name in ('generate_media','save_video','record_file_metadata','prepare_inputs_dict','get_model_settings','add_video_task','get_base_model_type','get_state_model_type'):
+        for name in ('generate_media','save_video','record_file_metadata','prepare_inputs_dict','get_model_settings','add_video_task','get_base_model_type','get_state_model_type','validate_settings','_build_runtime_task','edit_task_in_queue'):
             self.request_global(name)
 
     def post_ui_setup(self, components):
@@ -27,6 +27,9 @@ class H3LatentPlugin(WAN2GPPlugin):
         missing = [k for k in required if k not in components]
         if missing: raise RuntimeError('H3 Latent UI: missing native components: '+', '.join(missing))
         if not self._bridge_installed:
+            self.set_global('validate_settings', make_validation_wrapper(self.validate_settings))
+            self.set_global('_build_runtime_task', make_runtime_task_wrapper(self._build_runtime_task))
+            self.set_global('edit_task_in_queue', make_edit_wrapper(self.edit_task_in_queue))
             self.set_global('add_video_task', make_queue_wrapper(self.add_video_task,self.get_base_model_type,self.get_state_model_type))
             self.set_global('get_model_settings', make_settings_wrapper(self.get_model_settings,self.get_base_model_type))
             self.set_global('prepare_inputs_dict', make_prepare_wrapper(self.prepare_inputs_dict,self.get_base_model_type,self.get_state_model_type))
