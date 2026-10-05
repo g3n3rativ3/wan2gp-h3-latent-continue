@@ -118,7 +118,7 @@ class AudioVAE:
     def decode(self,audio): return torch.zeros(1,2,round(audio.shape[-1]/40*32000))
 
 class Transformer:
-    pdd_num_steps=None;cache=None;patch_size=(1,2,2)
+    control_layers=None;pdd_num_steps=None;cache=None;patch_size=(1,2,2)
     def parameters(self): yield torch.zeros(1)
     def preprocess_text_embeds(self,context): return context
     def __call__(self,video,audio,*args,**kwargs): return -video*0.5,-audio*0.5
@@ -190,6 +190,36 @@ with tempfile.TemporaryDirectory() as td:
                                input_waveform=torch.zeros(2,24000),input_waveform_sample_rate=32000)
             assert third['audio'].shape==result['audio'].shape
             assert -3 < third_job['pending']['info']['audio_origin_seconds'] < 0
+    # The reported model is Ref2VA: exercise its native branch separately.
+    pipe.reference_mode=True
+    ref_out,ref_job=run({'save':True,'continue':False,'latent_path':''})
+    ref_pending=ref_job['pending']
+    ref_pending['tensors']['last_frame']=ref_out['x'][:,-1:].clone()
+    ref_cp=Path(td)/'ref.safetensors'
+    atomic_save(ref_cp,ref_pending['tensors'],ref_pending['info'])
+    encodes=(pipe.vae.encode_calls,pipe.audio_vae.encode_calls)
+    ref_cont,ref_cont_job=run({'save':True,'continue':True,'latent_path':str(ref_cp)},
+                             input_video=ref_out['x'][:,-18:],prefix_frames_count=18)
+    assert ref_cont_job['pending']['info']['continuation_mode']=='latent'
+    assert encodes==(pipe.vae.encode_calls,pipe.audio_vae.encode_calls)
+    pipe.reference_mode=False
+    pipe.transformer.control_layers=[0]
+    try:
+        run({'save':True,'continue':False,'latent_path':''})
+    except ValueError as error:
+        assert 'ControlNet-Union' in str(error)
+    else:
+        raise AssertionError('ControlNet latent capture must be rejected')
+    finally:
+        pipe.transformer.control_layers=None
+# Capture must stay before the native cast to the VAE dtype.
+pipe.vae._model_dtype=torch.float16
+cast_out,cast_job=run({'save':True,'continue':False,'latent_path':''})
+assert cast_job['pending']['tensors']['video'].dtype==torch.float32
+assert cast_out['x'].dtype==torch.float16
+pipe.vae._model_dtype=torch.float32
+print('PASS: pre-decode capture preserves float32 inference latents with an FP16 decoder.')
+print('PASS: Ref2VA capture/continuation; ControlNet latent operation explicitly rejected.')
 print('PASS: extended context and frozen audio prefix, exact prefix preservation, sample counts, next-generation reload, no VAE re-encode.')
 print('PASS: actual adapted generate() with CPU stand-ins: generation, baseline continuation, latent AV continuation, capture; no AV encoder calls in latent mode.')
 

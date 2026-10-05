@@ -1,6 +1,33 @@
 # H3 Latent Continue for Wan2GP
 
-Version **0.3.5**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
+Version **0.3.6**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
+
+## Version 0.3.6: Wan2GP 13.141 decode-hook adaptation
+
+The supplied Wan2GP-main(4).zip adds ControlNet-related temporary variables to
+H3's cleanup immediately before VAE decoding. Version 0.3.5 matched the entire
+cleanup assignment to insert latent capture, so this unrelated addition made
+hook installation fail, including ordinary Ref2VA generation.
+
+Capture now anchors to the unique native video-decoding branch. It still runs
+after sampling and before the VAE dtype conversion, preserving original inference
+latents. The installed native cleanup remains intact. This removes a brittle
+text dependency without adding version checks or accepting ambiguous injection
+sites. Existing wrappers continue to delegate to the adapted native method.
+
+The new ControlNet-Union target-anchor path has different conditioning and pixel
+restoration semantics. Active ControlNet layers are explicitly rejected when
+latent operations are enabled; use native rendering with both latent options off
+for ControlNet. Ordinary H3 FL2VA/Ref2VA latent workflows remain supported.
+
+Tests pass with supplied Wan2GP **13.141**, with backward pipeline checks on the
+previous supplied **13.14**. Ref2VA save/continue, all three continuation modes,
+pre-decode float32 capture with an FP16 decoder, wrapper preservation, the Gradio
+form/queue/export path and strict setting transport are exercised on CPU. No real
+GPU render or complete third-party plugin installation was tested.
+
+Stop Wan2GP, replace the plugin folder with this release, and restart. Existing
+latent checkpoint formats are unchanged; use the corresponding original video.
 
 ## Version 0.3.5: Wan2GP 13.14 setting validation
 

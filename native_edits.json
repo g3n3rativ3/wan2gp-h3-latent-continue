@@ -20,8 +20,8 @@
     "new": "                   \"attention_sparsity\": float(attention_sparsity)}\n        payload['lc_audio_offset'] = getattr(self, '_lc_audio_origin', 0.0) * AUDIO_LATENT_FPS\n"
   },
   {
-    "old": "        context = payload = presentation = visual_latents = audio_latents = refs = keyframes = audio_keyframes = source_latents = source_noise = source_buffer = editable_mask = None\n        if not self.audio_only and decoded_video is None:\n",
-    "new": "        context = payload = presentation = visual_latents = audio_latents = refs = keyframes = audio_keyframes = source_latents = source_noise = source_buffer = editable_mask = None\n        self._lc_capture(video, audio, target_frames, fps, width, height)\n        if not self.audio_only and decoded_video is None:\n"
+    "old": "        if not self.audio_only and decoded_video is None:\n",
+    "new": "        self._lc_capture(video, audio, target_frames, fps, width, height)\n        if not self.audio_only and decoded_video is None:\n"
   },
   {
     "old": "                decoded_video = frozen_target_video[:, :target_frames].cpu()\n        video = None\n",

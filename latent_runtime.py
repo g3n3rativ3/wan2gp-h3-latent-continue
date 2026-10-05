@@ -30,6 +30,8 @@ class LatentMixin:
         if int(args.get('guide_phases', 1)) != 1:
             raise ValueError('H3 Latent Continue: use one generation phase.')
         if not job or not job['enabled']: return
+        if getattr(self.transformer, 'control_layers', None):
+            raise ValueError('H3 Latent Continue: ControlNet-Union is unsupported with latent operations; disable both latent options to use native ControlNet rendering.')
         if (args.get('custom_settings') or {}).get('audio_refinement', 'none') != 'none':
             raise ValueError('H3 Latent Continue: disable the extra audio refinement phase.')
         if args.get('refinement_mode') or self.audio_only or self.fixed_prompt is not None or self.transformer.pdd_num_steps is not None:
@@ -117,7 +119,7 @@ class LatentMixin:
                      'effective_context':getattr(self, '_lc_context_info', {}),
                      'join_settings':{k:job['options'].get(k) for k in ('video_context_frames','audio_context_seconds')},
                      'width':int(width),'height':int(height),'settings':job['settings'],
-                     'prototype_version':'0.3.5', 'continuation_mode':'latent' if self._lc_source is not None else 'pixels'},
+                     'prototype_version':'0.3.6', 'continuation_mode':'latent' if self._lc_source is not None else 'pixels'},
         }
 
     def _lc_decoded(self, decoded):

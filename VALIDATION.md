@@ -1,3 +1,18 @@
+# 0.3.6 — Wan2GP 13.141
+
+Source: Wan2GP-main(4).zip (wgp.py WanGP_version 13.141).
+
+The old native_edits capture pattern has zero matches in this source, while the other seven generate edits still match once. The cleanup now contains control_source and an additional control-anchor assignment. The replacement anchors only to the unique decode branch and leaves those assignments unchanged.
+
+- 38 CPU unit tests pass.
+- Native pipeline smoke passes on supplied 13.141 and prior 13.14: original generation, baseline/context/audio-prefix continuation, minimum context with overlap=1, frozen audio prefix/sample counts, cache/layout hooks and existing closure wrappers.
+- Added Ref2VA-mode capture and continuation regression with no AV re-encoding.
+- Added float32 inference capture with an FP16 decoder: saved video latents remain float32 and decoded output is FP16.
+- Active ControlNet layers explicitly fail for a latent operation. Native jobs with options disabled retain the original dispatch path.
+- Gradio 5.29.0 UI/queue/sidecar smoke and native settings-validation/import/edit smoke pass against 13.141.
+
+CPU stand-ins replace model weights/encoders for pipeline tests. No CUDA quality test or full third-party-plugin stack was run. ControlNet latent continuation is unsupported; checkpoint formats and inference continuation algorithms are unchanged.
+
 # 0.3.5 — Wan2GP 13.14 compatibility
 
 Supplied source: Wan2GP-main(3).zip, wgp.py WanGP_version 13.14, Gradio requirement 5.29.0.

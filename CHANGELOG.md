@@ -1,3 +1,11 @@
+# 0.3.6
+
+- Fix native H3 hook installation after Wan2GP 13.141 added ControlNet cleanup variables.
+- Anchor pre-decode capture to the decoding branch, independent of temporary-variable cleanup.
+- Preserve capture before VAE dtype conversion; no new source/version allowlist.
+- Explicitly reject active ControlNet-Union layers for latent operations.
+- Add Ref2VA save/continue and FP16-decoder capture regressions; verify old/new native pipelines.
+
 # 0.3.5
 
 - Support Wan2GP 13.14 strict top-level setting validation: move snapshots into plugin_data and the runtime task envelope.
