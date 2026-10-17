@@ -1,6 +1,52 @@
 # H3 Latent Continue for Wan2GP
 
-Version **0.3.6**. MiniMax H3 latent continuation for Wan2GP. **Single-phase generation only.**
+Version **0.3.8**. MiniMax H3 latent continuation for Wan2GP. **One or two generation phases** (untiled phase 2).
+
+## Version 0.3.8: two-phase support
+
+A two-phase H3 render generates at half resolution (phase 1), upscales the
+latents, then refines at full resolution (phase 2) with the phase-1 audio frozen.
+The two phases need conditioning video at two different resolutions.
+
+- **Save (two phases):** the checkpoint also stores the phase-1 video latents
+  (`video_phase1`, captured just before the latent upscaler) and their size in
+  the manifest (`guide_phases`, `phase1`). The final latents are unchanged.
+- **Continue (two phases):** phase 1 is conditioned on the saved phase-1 latents,
+  phase 2 on the saved full-resolution latents. Both are exact, with no VAE
+  re-encode. The saved last frame is shown to the prompt encoder at each phase's
+  size, as native does. Audio conditions are built once in phase 1 and stay
+  frozen in phase 2, as native. All three join modes are supported.
+- A two-phase checkpoint can also be continued with one phase (full-resolution
+  latents). A **single-phase** checkpoint cannot be continued with two phases:
+  it has no phase-1 latents, and the plugin refuses it with an explicit message
+  rather than re-encoding or downscaling latents.
+- Still unsupported: tiled phase 2 (`~`), more than two phases, extra audio
+  refinement phase, PDD, ControlNet-Union.
+- Single-phase checkpoints keep the exact same format (readable by 0.3.7).
+
+## Version 0.3.7: Wan2GP 18.17 audio-timeline adaptation
+
+Wan2GP 18.x added a native audio time offset to H3 (`audio_time_offset`), used to
+repair the audio at a continuation join (H3 now declares `audio_overlap_repair_ms`
+= 25). The audio length, the audio decode length and the transformer layout cache
+key now include this offset. Three of the plugin's anchors no longer matched, so
+hook installation failed with "no reachable native method contains the required
+latent insertion points", even for a plain *save latent* render.
+
+- The audio timeline, audio decode and layout edits are re-anchored on the new
+  native lines. The native offset is kept in every formula, and the plugin's own
+  offset is added to the layout cache key next to it.
+- During an active latent continuation, a non-zero native repair offset is
+  reset to 0 and logged. The join is conditioned on the saved latent audio, so
+  stacking both offsets would place the audio wrongly. With the default 25 ms
+  repair at 24 FPS the native offset is already 0 (repair stays inside the last
+  overlap frame). It only applies when the repair is longer than one frame.
+  Native jobs (latent options off) keep the native repair unchanged.
+- Native 18.x decodes video straight to uint8 with WGP truncation; the tail
+  fingerprints already accept uint8 frames, so saved video and checkpoint match.
+
+Checkpoint format is unchanged; 0.3.6 checkpoints continue to load. This release
+targets Wan2GP 18.17; keep 0.3.6 for Wan2GP 13.141.
 
 ## Version 0.3.6: Wan2GP 13.141 decode-hook adaptation
 

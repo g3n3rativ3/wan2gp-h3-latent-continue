@@ -34,8 +34,19 @@ namespace=dict(torch=torch,np=np,F=F,math=math,os=os,functools=functools,hashlib
                H3_DIALOGUE_GENERATION=False,VISUAL_COND_TIMESTEP=0.999,
                offload=SimpleNamespace(set_step_no_for_lora=lambda *a:None),
                tqdm=lambda it,**kw:it)
+# Wan2GP 18.x: generate() is also wrapped by Veda's geometry-release context.
+namespace['veda_generation_context']=lambda method:functools.wraps(method)(lambda self,*a,**k:method(self,*a,**k))
 exec((upstream/'models/minimax_h3/constants.py').read_text(),namespace)
 exec((upstream/'shared/utils/frame_scheduler.py').read_text(),namespace)
+# Native latent normalization constants, used around the two-phase latent upscaler.
+vae_tree=ast.parse((upstream/'models/minimax_h3/video_vae.py').read_text())
+vae_tree.body=[n for n in vae_tree.body if isinstance(n,ast.Assign) and any(getattr(t,'id','') in ('LATENTS_MEAN','LATENTS_STD') for t in n.targets)]
+exec(compile(vae_tree,str(upstream/'models/minimax_h3/video_vae.py'),'exec'),namespace)
+# Wan2GP 18.x imports these native helpers from shared.utils.utils; load the real bodies.
+utils_tree=ast.parse((upstream/'shared/utils/utils.py').read_text())
+utils_tree.body=[n for n in utils_tree.body if isinstance(n,ast.FunctionDef) and n.name in
+                 ('guide_to_float','guide_mask_to_float','convert_video_tensor_to_uint8_chunked')]
+exec(compile(utils_tree,str(upstream/'shared/utils/utils.py'),'exec'),namespace)
 # Native cooperative checkpoint has no active controller in this CPU harness.
 try:
     from shared.utils.media_control import inference_checkpoint
@@ -102,13 +113,19 @@ class VideoVAE:
     _model_dtype=torch.float32
     def __init__(self): self.encode_calls=0
     def enable_tiling(self,**kw): pass
-    def encode_condition(self,video,keep_all_latents=False):
+    def encode_condition(self,video,device=None,keep_all_latents=False):
         self.encode_calls+=1
         t=video.shape[2]
         n=math.ceil(t/17)*5 if keep_all_latents else (1 if t==1 else namespace['video_latent_frames'](t))
-        return torch.zeros(1,24,n,2,2)
-    def decode(self,video):
-        return F.interpolate(video[:,:3],size=(token_start(video.shape[2]),32,32),mode='nearest').tanh()
+        return torch.zeros(1,24,n,math.ceil(video.shape[-2]/16),math.ceil(video.shape[-1]/16))
+    upsampling=False
+    def decode(self,video,uint8_rounding=None):
+        # Wan2GP 18.x: the VAE converts to uint8 itself ("truncate" = WGP's float conversion).
+        self.decode_dtype=video.dtype
+        decoded=F.interpolate(video[:,:3].float(),size=(token_start(video.shape[2]),video.shape[-2]*16,video.shape[-1]*16),mode='nearest').tanh().to(video.dtype)
+        if uint8_rounding=='truncate':
+            return decoded.float().sub_(-1).mul_(127.5).clamp_(0,255).to(torch.uint8)
+        return decoded
 
 class AudioVAE:
     def __init__(self): self.encode_calls=0
@@ -121,34 +138,61 @@ class Transformer:
     control_layers=None;pdd_num_steps=None;cache=None;patch_size=(1,2,2)
     def parameters(self): yield torch.zeros(1)
     def preprocess_text_embeds(self,context): return context
-    def __call__(self,video,audio,*args,**kwargs): return -video*0.5,-audio*0.5
+    layouts=0
+    def __call__(self,video,audio,*args,**kwargs):
+        payload=args[-1] if args and isinstance(args[-1],dict) else kwargs.get('payload')
+        if payload is not None and not payload.get('refs'):
+            # Build the actual native packed layout and check every condition row is placed.
+            model=native_model();model.patch_size=self.patch_size
+            layout=model._layout(payload['text_token_tags'],video.shape[2],video.shape[3],video.shape[4],audio.shape[-1],payload)
+            rows=payload.get('cond_video_rows')
+            assert layout.num_condition_video_rows==(0 if rows is None else rows.shape[0]), 'Condition video rows do not match the stage layout'
+            rows=payload.get('cond_audio_rows')
+            assert layout.num_condition_audio_rows==(0 if rows is None else rows.shape[0]), 'Condition audio rows do not match the layout'
+            Transformer.layouts+=1
+        return -video*0.5,-audio*0.5
+
+class LatentUpscaler:
+    # Stand-in for the native latent upscaler between the two H3 phases.
+    def __init__(self): self.calls=0
+    def __call__(self,video,scale,target_size=None,abort_callback=None,progress_callback=None):
+        self.calls+=1
+        return F.interpolate(video.float(),size=target_size,mode='nearest').to(video.dtype)
 
 class TestPipeline(Base):
     def __init__(self):
         self.transformer=Transformer();self.vae=VideoVAE();self.audio_vae=AudioVAE()
         self.audio_only=False;self.reference_mode=False;self.fixed_prompt=None
-        self.text_encoder=None;self.latent_upscaler=None;self.dialogue_whisper=None
+        self.text_encoder=None;self.latent_upscaler=LatentUpscaler();self.dialogue_whisper=None
+        self.presented=[]
         self.dtype=torch.float32;self._abort=False;self._early_stop=False
         self._private_offloadobj=None;self._shared_offloadobj=None
         self._lc_identity={'architecture':'test'}
     def _prepare_audio_references(self,sources):
         assert not sources
         return []
-    def _encode_prompt(self,prompt,presentation): return torch.zeros(1),torch.zeros(3,dtype=torch.long)
+    def _encode_prompt(self,prompt,presentation):
+        # Record the image sizes shown to the prompt encoder at each stage.
+        self.presented.append([tuple(p['frames'].shape) for p in presentation if p.get('type')=='image'])
+        return torch.zeros(1),torch.zeros(3,dtype=torch.long)
 
 pipe=TestPipeline()
-def run(opts,**kw):
+def last_frame(x):
+    # Same conversion as integration.make_save_wrapper for native uint8 exports.
+    last=x[:,-1:].detach().cpu().float()
+    return last.div_(127.5).sub_(1.0) if x.dtype==torch.uint8 else last
+def run(opts,size=32,**kw):
     job={'enabled':opts['save'] or opts['continue'],'options':opts,'pending':None}
     token=JOB.set(job)
     try:
-        out=pipe.generate('test',frame_num=124,width=32,height=32,sampling_steps=2,seed=19,**kw)
-        assert out is not None and out['x'].shape==(3,124,32,32)
+        out=pipe.generate('test',frame_num=124,width=size,height=size,sampling_steps=2,seed=19,**kw)
+        assert out is not None and out['x'].shape==(3,124,size,size)
         return out,job
     finally: JOB.reset(token)
 
 out,job=run({'save':True,'continue':False,'latent_path':''})
 assert pipe.vae.encode_calls==0
-pending=job['pending'];pending['tensors']['last_frame']=out['x'][:,-1:].clone()
+pending=job['pending'];pending['tensors']['last_frame']=last_frame(out['x'])
 with tempfile.TemporaryDirectory() as td:
     cp=Path(td)/'clip.safetensors';atomic_save(cp,pending['tensors'],pending['info'])
     source=out['x'][:,-18:]
@@ -168,6 +212,25 @@ with tempfile.TemporaryDirectory() as td:
     assert shortjob['pending']['info']['effective_context']['video_latent_indices']==[31,32,33,34,35,36]
     assert shortjob['pending']['info']['effective_context']['native_overlap_frames']==1
     assert pipe.vae.encode_calls==2 and pipe.audio_vae.encode_calls==1
+    # Wan2GP 18.x native audio repair (audio_conditioning_end before the history end)
+    # moves the target audio start. A latent join must keep the saved-latent geometry.
+    import contextlib, io
+    log=io.StringIO()
+    with contextlib.redirect_stdout(log):
+        repaired,repaired_job=run({'save':True,'continue':True,'latent_path':str(cp)},input_video=source,prefix_frames_count=18,
+                                  input_waveform=torch.zeros(2,24000),input_waveform_sample_rate=32000,audio_conditioning_end=0.5)
+    assert 'Native audio join repair' in log.getvalue(), 'Native audio repair offset was not neutralized'
+    assert repaired_job['pending']['tensors']['audio'].shape==newjob['pending']['tensors']['audio'].shape
+    # Same length as the native 18.x baseline continuation (native slices instead of padding).
+    assert repaired['audio'].shape==continued['audio'].shape==baseline['audio'].shape
+    assert pipe.vae.encode_calls==2 and pipe.audio_vae.encode_calls==1
+    encodes=(pipe.vae.encode_calls,pipe.audio_vae.encode_calls)
+    native_repair,_=run({'save':False,'continue':False,'latent_path':''},input_video=source,prefix_frames_count=18,
+                        input_waveform=torch.zeros(2,24000),input_waveform_sample_rate=32000,audio_conditioning_end=0.5)
+    assert pipe.audio_vae.encode_calls>encodes[1], 'Disabled options must use the original native path'
+    assert native_repair['audio'].shape[0]>=baseline['audio'].shape[0], 'Native repair should regenerate earlier audio'
+    pipe.vae.encode_calls,pipe.audio_vae.encode_calls=encodes
+    print('PASS: native audio repair kept for native jobs, neutralized (and logged) for latent joins.')
     md,ts=load_checkpoint(cp)
     assert torch.equal(ts['video'],pending['tensors']['video'])
     for mode in ('context','audio_prefix'):
@@ -182,7 +245,7 @@ with tempfile.TemporaryDirectory() as td:
             start,stop,origin=audio_window(md,ts['audio'].shape[-1],1.0)
             assert torch.equal(advanced_pending['tensors']['audio'][...,:stop-start],ts['audio'][...,start:stop]), 'Frozen prefix changed during denoising'
             assert advanced_pending['info']['audio_origin_seconds']==origin
-            advanced_pending['tensors']['last_frame']=result['x'][:,-1:].clone()
+            advanced_pending['tensors']['last_frame']=last_frame(result['x'])
             cp2=Path(td)/'clip2.safetensors'
             atomic_save(cp2,advanced_pending['tensors'],advanced_pending['info'])
             advanced['latent_path']=str(cp2)
@@ -194,7 +257,7 @@ with tempfile.TemporaryDirectory() as td:
     pipe.reference_mode=True
     ref_out,ref_job=run({'save':True,'continue':False,'latent_path':''})
     ref_pending=ref_job['pending']
-    ref_pending['tensors']['last_frame']=ref_out['x'][:,-1:].clone()
+    ref_pending['tensors']['last_frame']=last_frame(ref_out['x'])
     ref_cp=Path(td)/'ref.safetensors'
     atomic_save(ref_cp,ref_pending['tensors'],ref_pending['info'])
     encodes=(pipe.vae.encode_calls,pipe.audio_vae.encode_calls)
@@ -212,11 +275,91 @@ with tempfile.TemporaryDirectory() as td:
         raise AssertionError('ControlNet latent capture must be rejected')
     finally:
         pipe.transformer.control_layers=None
+# ---- Two-phase H3: low-resolution phase 1, latent upscale, high-resolution phase 2 ----
+def save_cp(path,result,job):
+    pending=job['pending'];pending['tensors']['last_frame']=last_frame(result['x'])
+    atomic_save(path,pending['tensors'],pending['info'])
+    return pending
+with tempfile.TemporaryDirectory() as td:
+    upscales=pipe.latent_upscaler.calls
+    two,two_job=run({'save':True,'continue':False,'latent_path':''},size=64,guide_phases=2)
+    assert pipe.latent_upscaler.calls==upscales+1, 'Native two-phase path was not used'
+    tensors=two_job['pending']['tensors'];info=two_job['pending']['info']
+    assert tuple(tensors['video'].shape[-2:])==(4,4) and tuple(tensors['video_phase1'].shape[-2:])==(2,2)
+    assert tensors['video_phase1'].shape[2]==tensors['video'].shape[2]
+    assert info['guide_phases']==2 and info['phase1']=={'width':32,'height':32} and (info['width'],info['height'])==(64,64)
+    assert tensors['video'].dtype==torch.float32 and tensors['video_phase1'].dtype==torch.float32
+    cp2=Path(td)/'two.safetensors';two_pending=save_cp(cp2,two,two_job)
+    md2,ts2=load_checkpoint(cp2)
+    assert torch.equal(ts2['video_phase1'],tensors['video_phase1']) and md2['phase1']=={'width':32,'height':32}
+    source2=two['x'][:,-18:]
+    encodes=(pipe.vae.encode_calls,pipe.audio_vae.encode_calls)
+    for mode in ('baseline','context','audio_prefix'):
+        opts={'save':True,'continue':True,'latent_path':str(cp2),'join_mode':mode,'video_context_frames':35,'audio_context_seconds':1.0}
+        pipe.presented=[]
+        log=io.StringIO()
+        with contextlib.redirect_stdout(log):
+            cont,cont_job=run(opts,size=64,guide_phases=2,input_video=source2,prefix_frames_count=18,
+                              input_waveform=torch.zeros(2,24000),input_waveform_sample_rate=32000)
+        assert encodes==(pipe.vae.encode_calls,pipe.audio_vae.encode_calls), f'{mode}: two-phase latent continuation re-encoded AV'
+        out_log=log.getvalue()
+        assert '(phase 1 latents)' in out_log and '(full resolution latents)' in out_log, out_log
+        # The saved last frame is presented at each stage's size, as native does with the pixel frame.
+        assert pipe.presented[0][0][-2:]==(32,32) and pipe.presented[1][0][-2:]==(64,64), pipe.presented  # C,T,H,W (identity _qwen_frames)
+        pending=cont_job['pending']
+        assert pending['info']['continuation_mode']=='latent' and pending['info']['guide_phases']==2
+        assert tuple(pending['tensors']['video_phase1'].shape[-2:])==(2,2)
+        if mode=='audio_prefix':
+            start,stop,origin=audio_window(md2,ts2['audio'].shape[-1],1.0)
+            assert torch.equal(pending['tensors']['audio'][...,:stop-start],ts2['audio'][...,start:stop]), 'Frozen prefix changed in two-phase'
+            assert cont['audio'].shape==(round(124/24*32000),2)
+        # Successive two-phase continuation from the new checkpoint.
+        if mode=='baseline':
+            cp3=Path(td)/'two-next.safetensors';save_cp(cp3,cont,cont_job)
+            nxt,nxt_job=run({'save':True,'continue':True,'latent_path':str(cp3)},size=64,guide_phases=2,input_video=cont['x'][:,-18:],
+                            prefix_frames_count=18,input_waveform=torch.zeros(2,24000),input_waveform_sample_rate=32000)
+            assert nxt_job['pending']['info']['continuation_mode']=='latent'
+    # A two-phase checkpoint can be continued in one phase (full-resolution latents).
+    one,one_job=run({'save':True,'continue':True,'latent_path':str(cp2)},size=64,input_video=source2,prefix_frames_count=18,
+                    input_waveform=torch.zeros(2,24000),input_waveform_sample_rate=32000)
+    assert 'video_phase1' not in one_job['pending']['tensors'] and one_job['pending']['info']['guide_phases']==1
+    assert 'phase1' not in one_job['pending']['info']
+    # A single-phase checkpoint has no phase-1 latents: explicit refusal for a two-phase continuation.
+    single,single_job=run({'save':True,'continue':False,'latent_path':''},size=64)
+    cp1=Path(td)/'single.safetensors';save_cp(cp1,single,single_job)
+    try:
+        run({'save':False,'continue':True,'latent_path':str(cp1)},size=64,guide_phases=2,input_video=single['x'][:,-18:],
+            prefix_frames_count=18,input_waveform=torch.zeros(2,24000),input_waveform_sample_rate=32000)
+    except ValueError as error:
+        assert 'single-phase render' in str(error), error
+    else:
+        raise AssertionError('Two-phase continuation of a single-phase checkpoint must be refused')
+    # Phase-1 manifest/tensor consistency is validated on load.
+    bad=dict(two_pending['info']);bad['phase1']={'width':48,'height':32}
+    atomic_save(Path(td)/'bad.safetensors',two_pending['tensors'],bad)
+    try: load_checkpoint(Path(td)/'bad.safetensors')
+    except ValueError as error: assert 'phase-1' in str(error)
+    else: raise AssertionError('Mismatched phase-1 manifest accepted')
+    # Ref2VA two-phase save and continuation.
+    pipe.reference_mode=True
+    ref2,ref2_job=run({'save':True,'continue':False,'latent_path':''},size=64,guide_phases=2)
+    cpr=Path(td)/'ref2.safetensors';save_cp(cpr,ref2,ref2_job)
+    encodes=(pipe.vae.encode_calls,pipe.audio_vae.encode_calls)
+    _,refc_job=run({'save':True,'continue':True,'latent_path':str(cpr)},size=64,guide_phases=2,input_video=ref2['x'][:,-18:],prefix_frames_count=18)
+    assert refc_job['pending']['info']['continuation_mode']=='latent'
+    assert encodes==(pipe.vae.encode_calls,pipe.audio_vae.encode_calls)
+    pipe.reference_mode=False
+    # Native two-phase render with latent options off still uses the original method.
+    run({'save':False,'continue':False,'latent_path':''},size=64,guide_phases=2)
+assert Transformer.layouts>0
+print('PASS: two-phase save (phase-1 + final latents), continuation in all three modes with exact per-stage latents and no AV re-encode, '
+      'successive two-phase joins, Ref2VA, two-phase -> one-phase, single-phase checkpoint refused for two phases, manifest validation.')
 # Capture must stay before the native cast to the VAE dtype.
 pipe.vae._model_dtype=torch.float16
 cast_out,cast_job=run({'save':True,'continue':False,'latent_path':''})
 assert cast_job['pending']['tensors']['video'].dtype==torch.float32
-assert cast_out['x'].dtype==torch.float16
+assert pipe.vae.decode_dtype==torch.float16, 'Native cast to the VAE dtype was bypassed'
+assert cast_out['x'].dtype==torch.uint8  # 18.x decodes straight to WGP-truncated uint8
 pipe.vae._model_dtype=torch.float32
 print('PASS: pre-decode capture preserves float32 inference latents with an FP16 decoder.')
 print('PASS: Ref2VA capture/continuation; ControlNet latent operation explicitly rejected.')

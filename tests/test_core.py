@@ -236,12 +236,17 @@ class Integration(unittest.TestCase):
         self.assertEqual(result['plugin_data'],options)
         options['h3_latent_prototype']['save']=False
         self.assertTrue(result['plugin_data']['h3_latent_prototype']['save'])
+        # Two H3 phases are supported; anything else is rejected.
+        self.assertEqual(wrap('state',{'state':{'model_type':'minimax_h3_fl2va'},'guidance_phases':2,'plugin_data':{KEY:{'save':True}}})['guidance_phases'],2)
         with self.assertRaises(ValueError):
-            wrap('state',{'state':{'model_type':'minimax_h3_fl2va'},'guidance_phases':2,'plugin_data':{KEY:{'save':True}}})
+            wrap('state',{'state':{'model_type':'minimax_h3_fl2va'},'guidance_phases':3,'plugin_data':{KEY:{'save':True}}})
 
-    def test_two_phases_and_unsupported_rejected(self):
+    def test_two_phases_accepted_and_unsupported_rejected(self):
         opts={'save':True,'continue':False,'latent_path':''}
-        for field,value in [('guidance_phases',2),('spatial_upsampling','x2'),('temporal_upsampling','x2'),
+        preflight({'guidance_phases':2},opts)
+        for flags in ('~','&'):
+            with self.subTest(flags=flags),self.assertRaises(ValueError): preflight({'guidance_phases':2,'video_prompt_type':flags},opts)
+        for field,value in [('guidance_phases',3),('spatial_upsampling','x2'),('temporal_upsampling','x2'),
                             ('batch_size',2),('film_grain_intensity',0.2),('keep_frames_video_source','-10')]:
             with self.subTest(field=field),self.assertRaises(ValueError): preflight({field:value},opts)
         with self.assertRaises(ValueError): preflight({}, {'save':False,'continue':True,'latent_path':''})

@@ -1,3 +1,37 @@
+# 0.3.8 — two phases, Wan2GP 18.17
+
+- 38 CPU unit tests pass (two phases accepted, three phases and tiled phase 2 rejected).
+- Native pipeline smoke on 18.17, two phases at 64x64 (phase 1 32x32): native upscaler used; phase-1 and final latents
+  captured in float32; checkpoint round trip; continuation in baseline/context/audio-prefix modes with no AV encoder call;
+  phase 1 uses phase-1 latents and phase 2 full-resolution latents; prompt frame 32x32 then 64x64; frozen audio prefix
+  intact after phase 2; successive two-phase continuation; Ref2VA two-phase save/continue; two-phase checkpoint continued
+  with one phase; single-phase checkpoint refused for two phases; inconsistent phase-1 manifest rejected; native
+  two-phase render with options off.
+- The transformer stand-in builds the actual native packed layout at every denoising step and checks condition video/audio
+  row counts. A deliberate mutation (full-resolution latents in phase 1) fails this check.
+- All single-phase checks, Gradio UI/queue/sidecar and settings smokes pass unchanged.
+
+Not tested: GPU render quality, the "2 Phases Plus" plugin (its source was not supplied), tiled phase 2.
+
+# 0.3.7 — Wan2GP 18.17
+
+Source: WanGP-main.zip (wgp.py WanGP_version 18.17).
+
+Reproduced with 0.3.6 in the native pipeline harness: the same RuntimeError as the report. Two of eight
+generate() anchors (audio_t, audio decode) and one transformer _layout anchor no longer matched
+because 18.x added `audio_time_offset`.
+
+- 38 CPU unit tests pass.
+- Native pipeline smoke passes on 18.17: original generation, baseline/context/audio-prefix continuation,
+  overlap=1 minimum context, frozen audio prefix, sample counts, Ref2VA save/continue, ControlNet rejection,
+  float32 capture before the FP16 VAE cast, wrapper chains, layout cache, loader identity.
+- New: latent continuation with a native audio repair offset keeps the saved-latent audio geometry and logs it;
+  a disabled job with the same input still uses the original native path.
+- Gradio 5.29.0 UI/queue/sidecar smoke and settings-validation/import/edit smoke pass against 18.17.
+
+CPU stand-ins replace the model weights. No GPU render or quality comparison was run. The 13.141 source was
+not available for a backward check; 0.3.7 targets 18.17.
+
 # 0.3.6 — Wan2GP 13.141
 
 Source: Wan2GP-main(4).zip (wgp.py WanGP_version 13.141).

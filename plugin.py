@@ -11,8 +11,8 @@ class H3LatentPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = 'H3 Latent Continue'
-        self.version = '0.3.6'
-        self.description = 'Single-phase H3 comparative latent continuation in the existing video form.'
+        self.version = '0.3.8'
+        self.description = 'One- or two-phase H3 comparative latent continuation in the existing video form.'
         self._bridge_installed = False
 
     def setup_ui(self):
@@ -69,7 +69,8 @@ class H3LatentPlugin(WAN2GPPlugin):
                                 'these experiments do not promise a seamless join. Initial clip: use Reference. '
                                 'Reference retains at least 18 source frames when available, independently of assembly overlap.')
                     gr.Markdown('Keep the source video in the usual **Video to Continue** field. '
-                                'Single phase, same resolution/FPS. Original video + matching checkpoint required.')
+                                'One or two phases (untiled phase 2), same resolution/FPS. Original video + matching checkpoint required. '
+                                'Two-phase continuation needs a checkpoint saved from a two-phase render.')
             def update_data(saved, enabled, path, existing, session_state, experiment='baseline', video_frames=35, audio_seconds=1.0):
                 result = copy.deepcopy(state_mapping(existing))
                 result[KEY] = {'save':bool(saved),'continue':bool(enabled),'latent_path':path or '',

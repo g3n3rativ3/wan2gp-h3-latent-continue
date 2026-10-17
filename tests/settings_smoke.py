@@ -19,6 +19,8 @@ load('h3transport',root/'__init__.py',True)
 from h3transport.integration import (TASK_KEY,KEY,make_queue_wrapper,make_settings_wrapper,
     make_generation_wrapper,make_validation_wrapper,make_runtime_task_wrapper,make_edit_wrapper,preflight)
 validator=load('native_names',upstream/'shared/utils/setting_names.py')
+# Wan2GP 18.x renamed unknown_settings_error to settings_error.
+settings_error=getattr(validator,'settings_error',None) or validator.unknown_settings_error
 model='minimax_h3_fl2va_pruned_fused_turbo'
 base=lambda m:'minimax_h3_fl2va_pruned' if m==model else m
 get_model=lambda s:s['model_type']
@@ -27,8 +29,10 @@ class ReachedModelValidation(Exception):pass
 def model_def(m):raise ReachedModelValidation()
 ns=dict(task_id=0,get_gen_info=lambda st:st.setdefault('gen',{'queue':[]}),
         get_preview_images=lambda p:(None,None,[],[]),
-        unknown_settings_error=validator.unknown_settings_error,
-        gr=types.SimpleNamespace(Info=seen.append),get_model_def=model_def)
+        unknown_settings_error=settings_error,settings_error=settings_error,
+        gr=types.SimpleNamespace(Info=seen.append),get_model_def=model_def,
+        # Wan2GP 18.x: unbound sessions have no workspace binding.
+        workspace_storage=types.SimpleNamespace(current_binding=lambda state:None))
 tree=ast.parse((upstream/'wgp.py').read_text())
 tree.body=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in
            ('add_video_task','_build_runtime_task','validate_settings')]
@@ -40,14 +44,14 @@ try:validate({},model,True,legacy)
 except ReachedModelValidation:pass
 else:raise AssertionError('Did not reach native model validation')
 assert TASK_KEY not in legacy
-assert not validator.unknown_settings_error(legacy)
-assert validator.unknown_settings_error({'unrelated_typo':1}) # validator not relaxed
+assert not settings_error(legacy)
+assert settings_error({'unrelated_typo':1}) # validator not relaxed
 
 for save in (False,True):
     st={'model_type':model,'gen':{'queue':[]}}
     opts={'save':save,'continue':False,'latent_path':''}
     settings={'plugin_data':{KEY:opts,TASK_KEY:{'model_type':model,'options':copy.deepcopy(opts)},'foreign':{'keep':7}}}
-    assert not validator.unknown_settings_error(settings)
+    assert not settings_error(settings)
     enqueue=make_queue_wrapper(ns['add_video_task'],base,get_model)
     enqueue(state=st,model_type=model,**settings)
     task=st['gen']['queue'][0]

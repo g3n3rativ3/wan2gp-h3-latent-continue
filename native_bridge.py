@@ -120,8 +120,9 @@ def ensure_hooks():
         '        elif isinstance(anchor, (int, float)) and not isinstance(anchor, bool):\n'
         '            origin = target_origin + float(anchor)\n')])
     layout = compile_edit(MiniMaxH3Model._layout, [(
-        '                     payload["fps"],\n',
-        '                     payload["fps"],\n                     payload.get("lc_audio_offset", 0.0),\n'), (
+        '                     payload["fps"], payload.get("audio_time_offset", 0.0),\n',
+        '                     payload["fps"], payload.get("audio_time_offset", 0.0),\n'
+        '                     payload.get("lc_audio_offset", 0.0),\n'), (
         '        payload["layout_signature"], payload["layout"] = signature, layout\n',
         '        _h3_shift_audio(layout, payload.get("lc_audio_offset", 0.0))\n'
         '        payload["layout_signature"], payload["layout"] = signature, layout\n')],

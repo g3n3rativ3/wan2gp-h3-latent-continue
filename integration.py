@@ -142,6 +142,12 @@ def options(data):
     return result
 
 
+def check_phases(value):
+    # H3 renders one phase, or two (low-resolution phase + latent upscale + high-resolution phase).
+    if int(value or 1) not in (1, 2):
+        raise ValueError('H3 Latent Continue supports one or two generation phases.')
+
+
 def preflight(params, opts):
     if not (opts['save'] or opts['continue']): return
     if 'S' in str(params.get('audio_prompt_type') or ''):
@@ -151,8 +157,7 @@ def preflight(params, opts):
         raise ValueError('H3 Latent: experimental join modes require Continue with latent; use baseline for the initial clip.')
     if join_mode == 'audio_prefix' and params.get('skip_steps_cache_type') not in (None, '', 'none', 'disabled'):
         raise ValueError('H3 Latent: audio-prefix mode requires No Skipping (Spectrum and other step caches unsupported).')
-    if int(params.get('guidance_phases', 1)) != 1:
-        raise ValueError('H3 Latent Continue supports SINGLE-PHASE rendering only. Two phases are not supported.')
+    check_phases(params.get('guidance_phases', 1))
     if int(params.get('batch_size', 1)) != 1:
         raise ValueError('H3 Latent Continue: batch size must be 1.')
     for key in ('spatial_upsampling','temporal_upsampling','postprocess_audio','replace_voice_method',
@@ -168,7 +173,7 @@ def preflight(params, opts):
     if (params.get('frame_scheduler') or {}).get('active'):
         raise ValueError('H3 Latent Continue: custom frame scheduling is unsupported.')
     if '&' in str(params.get('video_prompt_type') or '') or '~' in str(params.get('video_prompt_type') or ''):
-        raise ValueError('H3 Latent Continue: HDR and phase-two tiling are unsupported.')
+        raise ValueError('H3 Latent Continue: HDR and tiled phase 2 are unsupported; use untiled phase 2.')
     if (params.get('custom_settings') or {}).get('audio_refinement', 'none') != 'none':
         raise ValueError('H3 Latent Continue: disable extra audio refinement.')
     if opts['continue']:
@@ -214,9 +219,8 @@ def make_generation_wrapper(original, get_base):
         if not (opts['save'] or opts['continue']):
             return original(*args, **kwargs)
         ensure_hooks()
-        # Latent operations require one phase; disabled jobs already used the native path.
-        if int(params.get('guidance_phases',1)) != 1:
-            raise ValueError('H3 Latent Continue supports SINGLE-PHASE rendering only.')
+        # Latent operations support one or two H3 phases; disabled jobs already used the native path.
+        check_phases(params.get('guidance_phases',1))
         preflight(params, opts)
         job = {'enabled':opts['save'] or opts['continue'],'options':opts,'pending':None,
                'output_seen':False,'saved':[], 'source': str(params.get('video_source') or '')}
@@ -310,8 +314,8 @@ def make_prepare_wrapper(original, get_base, get_state):
         model = model_type or get_state(inputs['state'])
         prototype = get_base(model) in SUPPORTED
         data = merge_ui_options(inputs.get('state'), model, inputs.get('plugin_data'))
-        if prototype and any(options(data)[k] for k in ('save','continue')) and int(inputs.get('guidance_phases',1)) != 1:
-            raise ValueError('H3 Latent Continue supports SINGLE-PHASE rendering only; change the source settings explicitly.')
+        if prototype and any(options(data)[k] for k in ('save','continue')):
+            check_phases(inputs.get('guidance_phases',1))
         result = original(target, inputs, model_type, model_filename)
         if prototype and target in ('state','edit_state','settings'):
             result['plugin_data'] = data

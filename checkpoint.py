@@ -50,7 +50,8 @@ def inspect_checkpoint(path):
         origin = info.get('audio_origin_seconds', 0.0)
         if not isinstance(origin, (int,float)) or not math.isfinite(origin) or not -3 <= origin <= 0:
             raise ValueError('Invalid checkpoint audio timeline origin.')
-        if set(f.keys()) != {'video', 'audio', 'last_frame'}:
+        # video_phase1: optional low-resolution phase-1 latents of a two-phase render.
+        if set(f.keys()) not in ({'video', 'audio', 'last_frame'}, {'video', 'audio', 'last_frame', 'video_phase1'}):
             raise ValueError('Unexpected checkpoint tensor keys.')
         shapes = {k: f.get_slice(k).get_shape() for k in f.keys()}
     v, a, last = shapes['video'], shapes['audio'], shapes['last_frame']
@@ -68,6 +69,15 @@ def inspect_checkpoint(path):
         raise ValueError('Invalid checkpoint FPS.')
     if info.get('width') != v[4]*16 or info.get('height') != v[3]*16:
         raise ValueError('Manifest dimensions differ from latent dimensions.')
+    p1 = shapes.get('video_phase1')
+    if p1 is not None:
+        if len(p1) != 5 or p1[:3] != v[:3] or not 2 <= p1[3] <= v[3] or not 2 <= p1[4] <= v[4]:
+            raise ValueError('Invalid H3 phase-1 video latent shape.')
+        phase1 = info.get('phase1') or {}
+        if phase1.get('width') != p1[4]*16 or phase1.get('height') != p1[3]*16:
+            raise ValueError('Manifest phase-1 dimensions differ from phase-1 latent dimensions.')
+    elif 'phase1' in info:
+        raise ValueError('Manifest declares phase-1 latents that the checkpoint does not contain.')
     return info
 
 

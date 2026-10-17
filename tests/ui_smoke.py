@@ -55,6 +55,7 @@ native_tree=ast.parse((wangp/'wgp.py').read_text())
 native_tree.body=[node for node in native_tree.body if isinstance(node,ast.FunctionDef) and node.name in native_names]
 native={'inspect':inspect,'typing':typing,'gr':gr,'task_id':0,
         'get_gen_info':lambda state:state.setdefault('gen',{'queue':[]}),
+        'workspace_storage':types.SimpleNamespace(current_binding=lambda state:None),  # Wan2GP 18.x
         'get_preview_images':lambda inputs:(None,None,[],[])}
 # Load the actual new state container/helper without importing the whole Deepy app.
 hybrid=wangp/'shared/deepy/hybrid.py'

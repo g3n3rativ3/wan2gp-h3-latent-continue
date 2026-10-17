@@ -1,3 +1,20 @@
+# 0.3.8
+
+- Two-phase H3 support for save and continue (untiled phase 2).
+- Checkpoint: optional `video_phase1` tensor and `phase1`/`guide_phases` manifest fields, validated on load.
+- Per-stage latent conditions (phase 1 low resolution, phase 2 full resolution); stage-sized prompt frame.
+- Manifest width/height are the target size in both modes; settings record `sampling_steps2` and `switch_threshold`.
+- Explicit refusal of a two-phase continuation from a single-phase checkpoint.
+- Harness: latent-upscaler stand-in; every transformer step builds the native packed layout and checks condition rows.
+
+# 0.3.7
+
+- Fix native H3 hook installation on Wan2GP 18.17 (native `audio_time_offset` / audio join repair).
+- Re-anchor the audio-timeline, audio-decode and transformer-layout edits; native offset kept in all formulas.
+- Latent continuation resets a non-zero native audio repair offset to 0 (logged); native jobs unchanged.
+- Test harness updated for 18.x (Veda generation context, uint8 VAE decode, encoder device argument,
+  renamed `settings_error`, workspace binding); new audio-repair regression.
+
 # 0.3.6
 
 - Fix native H3 hook installation after Wan2GP 13.141 added ControlNet cleanup variables.

@@ -27,8 +27,8 @@ class LatentMixin:
         self._lc_join_mode = 'baseline'
         self._lc_context_info = {}
         job = JOB.get()
-        if int(args.get('guide_phases', 1)) != 1:
-            raise ValueError('H3 Latent Continue: use one generation phase.')
+        if int(args.get('guide_phases', 1) or 1) not in (1, 2):
+            raise ValueError('H3 Latent Continue: use one or two generation phases.')
         if not job or not job['enabled']: return
         if getattr(self.transformer, 'control_layers', None):
             raise ValueError('H3 Latent Continue: ControlNet-Union is unsupported with latent operations; disable both latent options to use native ControlNet rendering.')
@@ -41,6 +41,7 @@ class LatentMixin:
         if args.get('image_start') is not None and job['options']['continue']:
             raise ValueError('H3 Latent Continue: select Continue Video, without a Start Image.')
         job['pending'] = None
+        job['phase1'] = None
         if job['options']['continue']:
             if args.get('input_video') is None or int(args.get('prefix_frames_count',0)) < 1:
                 raise ValueError('H3 Latent Continue: Continue Video and a source video are required.')
@@ -64,10 +65,27 @@ class LatentMixin:
             if self._lc_join_mode != 'baseline':
                 print(f'[H3 Join] mode={self._lc_join_mode}, video context={self._lc_video_context} frames, audio context={self._lc_audio_seconds}s')
         job['identity'] = self._lc_identity
-        job['settings'] = {k: args.get(k) for k in ('input_prompt','seed','sampling_steps','shift','sample_solver','guide_phases')}
+        job['settings'] = {k: args.get(k) for k in ('input_prompt','seed','sampling_steps','shift','sample_solver','guide_phases',
+                                                    'sampling_steps2','switch_threshold')}
 
-    def _lc_video_conditions(self, latents, keyframes, overlap):
-        src = self._lc_source['video']
+    def _lc_stage_video(self, stage_height, stage_width):
+        """Saved latents at this stage's size: final (full) or phase-1 (two-phase low resolution)."""
+        if stage_height is None or stage_width is None:
+            return self._lc_source['video'], 'single'
+        size = (math.ceil(int(stage_height) / 16), math.ceil(int(stage_width) / 16))
+        for key, label in (('video', 'full resolution'), ('video_phase1', 'phase 1')):
+            tensor = self._lc_source.get(key)
+            if tensor is not None and tuple(tensor.shape[-2:]) == size:
+                return tensor, label
+        if self._lc_source.get('video_phase1') is None:
+            raise ValueError(f'H3 Latent Continue: this checkpoint has no {stage_width}x{stage_height} phase-1 latents: it was saved '
+                             'from a single-phase render. Continue it with one phase, or render the source clip with two phases '
+                             'and Save latent checkpoint enabled.')
+        raise ValueError(f'H3 Latent Continue: no saved latents match the {stage_width}x{stage_height} generation stage; '
+                         'use the source resolution and the same number of phases.')
+
+    def _lc_video_conditions(self, latents, keyframes, overlap, stage_height=None, stage_width=None):
+        src, stage = self._lc_stage_video(stage_height, stage_width)
         native_overlap = overlap
         if getattr(self, '_lc_join_mode', 'baseline') != 'baseline':
             overlap = min(self._lc_video_context, self._lc_manifest['target_frames'])
@@ -81,7 +99,7 @@ class LatentMixin:
         for index, position in selected:
             latents.append(src[:,:,index:index+1].clone())
             keyframes.append({'anchor':'frame','frame_index':position,'latent_frame_count':1})
-        print('[H3 Latent] Video context loaded directly; no VAE re-encode. '
+        print(f'[H3 Latent] Video context loaded directly ({stage} latents); no VAE re-encode. '
               f'{len(selected)} time-positioned latent blocks; context={overlap} frames, assembly overlap={native_overlap}.')
 
     def _lc_audio_conditions(self, latents, keyframes, overlap, fps):
@@ -107,19 +125,33 @@ class LatentMixin:
             keyframes.append({'anchor':float(start-boundary),'latent_frame_count':stop-start})
             self._lc_context_info['audio_latent_range'] = [int(start), int(stop)]
 
+    def _lc_capture_phase1(self, video):
+        """Two-phase render: keep the low-resolution phase-1 result before the latent upscaler."""
+        job = JOB.get()
+        if not job or not job['options'].get('save'): return
+        job['phase1'] = video.detach().cpu().clone().contiguous()
+
     def _lc_capture(self, video, audio, target_frames, fps, width, height):
         job = JOB.get()
         if not job or not job['options'].get('save'): return
+        tensors = {'video':video.detach().cpu().clone().contiguous(),
+                   'audio':audio.detach().cpu().clone().contiguous()}
+        phase1, job['phase1'] = job.get('phase1'), None
+        if phase1 is not None:
+            if phase1.shape[:3] != tensors['video'].shape[:3]:
+                raise ValueError('H3 Latent: phase-1 and final latents have different lengths; refusing to save a mismatched checkpoint.')
+            tensors['video_phase1'] = phase1
         job['pending'] = {
-            'tensors': {'video':video.detach().cpu().clone().contiguous(),
-                        'audio':audio.detach().cpu().clone().contiguous()},
+            'tensors': tensors,
             'info': {'identity':job['identity'], 'target_frames':int(target_frames),'fps':float(fps),
                      'audio_origin_seconds':getattr(self, '_lc_audio_origin', 0.0),
                      'join_mode':getattr(self, '_lc_join_mode', 'baseline'),
                      'effective_context':getattr(self, '_lc_context_info', {}),
                      'join_settings':{k:job['options'].get(k) for k in ('video_context_frames','audio_context_seconds')},
                      'width':int(width),'height':int(height),'settings':job['settings'],
-                     'prototype_version':'0.3.6', 'continuation_mode':'latent' if self._lc_source is not None else 'pixels'},
+                     'guide_phases':2 if phase1 is not None else 1,
+                     **({'phase1':{'width':int(phase1.shape[-1])*16,'height':int(phase1.shape[-2])*16}} if phase1 is not None else {}),
+                     'prototype_version':'0.3.8', 'continuation_mode':'latent' if self._lc_source is not None else 'pixels'},
         }
 
     def _lc_decoded(self, decoded):
