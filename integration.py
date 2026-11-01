@@ -138,7 +138,7 @@ def options(data):
     raw = state_mapping(state_mapping(data).get(KEY))
     result = {'save': raw.get('save') is True, 'continue': raw.get('continue') is True,
               'latent_path': str(raw.get('latent_path') or '')}
-    result.update({k:raw[k] for k in ('join_mode','video_context_frames','audio_context_seconds') if k in raw})
+    result.update({k:raw[k] for k in ('join_mode','video_context_frames','audio_context_seconds','seamless_end','phase1_from_final','audio_noise_1818') if k in raw})
     return result
 
 
@@ -155,8 +155,8 @@ def preflight(params, opts):
     join_mode, _, _ = seam_settings(opts)
     if join_mode != 'baseline' and not opts['continue']:
         raise ValueError('H3 Latent: experimental join modes require Continue with latent; use baseline for the initial clip.')
-    if join_mode == 'audio_prefix' and params.get('skip_steps_cache_type') not in (None, '', 'none', 'disabled'):
-        raise ValueError('H3 Latent: audio-prefix mode requires No Skipping (Spectrum and other step caches unsupported).')
+    if join_mode in ('audio_prefix', 'pinned') and params.get('skip_steps_cache_type') not in (None, '', 'none', 'disabled'):
+        raise ValueError('H3 Latent: audio-prefix and exact join require No Skipping (Spectrum and other step caches unsupported).')
     check_phases(params.get('guidance_phases', 1))
     if int(params.get('batch_size', 1)) != 1:
         raise ValueError('H3 Latent Continue: batch size must be 1.')
@@ -174,8 +174,8 @@ def preflight(params, opts):
         raise ValueError('H3 Latent Continue: custom frame scheduling is unsupported.')
     if '&' in str(params.get('video_prompt_type') or '') or '~' in str(params.get('video_prompt_type') or ''):
         raise ValueError('H3 Latent Continue: HDR and tiled phase 2 are unsupported; use untiled phase 2.')
-    if (params.get('custom_settings') or {}).get('audio_refinement', 'none') != 'none':
-        raise ValueError('H3 Latent Continue: disable extra audio refinement.')
+    # Audio Refinement Extra Phase (native or H3 Audio Refinement Controls) is supported:
+    # during a latent join the refinement keeps the join conditions (latent_runtime._lc_refinement).
     if opts['continue']:
         if 'V' not in str(params.get('image_prompt_type') or '') or not params.get('video_source'):
             raise ValueError('Select Continue Video and upload its original source video.')
@@ -214,10 +214,21 @@ def make_generation_wrapper(original, get_base):
             if KEY not in payload:
                 return original(*args, **kwargs)
             opts = options(payload)
+        noise_1818 = opts.get('audio_noise_1818') is True
         print('[H3 Latent] Job options: save=' + str(opts['save'])
-              + ', continue=' + str(opts['continue']))
+              + ', continue=' + str(opts['continue']) + (', audio noise as WanGP 18.18' if noise_1818 else ''))
         if not (opts['save'] or opts['continue']):
-            return original(*args, **kwargs)
+            if not noise_1818:
+                return original(*args, **kwargs)
+            # Any H3 render (Text Only, Start with Image, Continue Video, sliding windows): only the seeded audio
+            # noise changes; no latent operation, no checkpoint, no restriction.
+            ensure_hooks()
+            token = JOB.set({'enabled':True,'noise_only':True,'options':opts,'pending':None,'part2':None,
+                             'wgp_overlap':0,'output_seen':False,'saved':[],'source':''})
+            try:
+                return original(*args, **kwargs)
+            finally:
+                JOB.reset(token)
         ensure_hooks()
         # Latent operations support one or two H3 phases; disabled jobs already used the native path.
         check_phases(params.get('guidance_phases',1))
@@ -241,64 +252,249 @@ def make_generation_wrapper(original, get_base):
     return generate
 
 
+def match_tail(holder, tensor):
+    """Decoded-target frame where the exported video ends (the tail may be trimmed by WGP)."""
+    signature = tuple(frame_hash(tensor[:,i:i+1]) for i in range(max(0,tensor.shape[1]-8),tensor.shape[1]))
+    matches = holder.get('tail_signatures', {}).get(signature, [])
+    if len(matches) > 1:
+        raise ValueError('Ambiguous output tail (repeated identical frames); refusing to guess the latent endpoint.')
+    if not matches:
+        raise ValueError('Output tail no longer matches the decoded latent: postprocessing or trimming is unsupported. No mismatched sidecar will be written.')
+    return matches[0]
+
+
+def frames_from(value, start):
+    """Frames [start:] of a native save_video input, keeping each chunk's own layout."""
+    if torch.is_tensor(value):
+        axis = 2 if value.ndim == 5 else 1
+        return value.narrow(axis, start, value.shape[axis] - start)
+    result, offset = [], 0
+    for chunk in value:
+        if chunk is None:
+            continue
+        axis = 0 if chunk.shape[-1] in (1, 3, 4) else 1  # native save_video: channel-last chunks first
+        count = chunk.shape[axis]
+        local = max(0, start - offset)
+        if local < count:
+            result.append(chunk.narrow(axis, local, count - local))
+        offset += count
+    return result
+
+
+def available_path(path):
+    path = Path(path)
+    candidate, number = path, 2
+    while candidate.exists():
+        candidate = path.with_name(f'{path.stem}_{number}{path.suffix}')
+        number += 1
+    return candidate
+
+
+def new_frame_count(part, tensor):
+    """Frames created by this render that WGP keeps after the source video (tail fingerprints)."""
+    return part['history'] + match_tail(part, tensor) - part['overlap']
+
+
+def gather_frames(value, start, count):
+    """Frames [start, start + count) of a native save_video input as one C,T,H,W tensor."""
+    chunks = frames_from(value, start)
+    if torch.is_tensor(chunks):
+        frames = chunks[0] if chunks.ndim == 5 else chunks
+        return frames[:, :count]
+    parts, taken = [], 0
+    for chunk in chunks:
+        chunk = chunk.permute(3, 0, 1, 2) if chunk.shape[-1] in (1, 3, 4) else chunk
+        parts.append(chunk[:, :count - taken]); taken += parts[-1].shape[1]
+        if taken >= count:
+            break
+    return torch.cat(parts, dim=1)
+
+
+def replace_frames(value, start, frames):
+    """Copy of a native save_video input with frames [start, start + n) replaced (C,T,H,W uint8); untouched chunks shared."""
+    count = frames.shape[1]
+    if torch.is_tensor(value):
+        result = value.clone()
+        target = result[0] if result.ndim == 5 else result
+        target[:, start:start + count] = frames.to(target)
+        return result
+    result, offset = [], 0
+    for chunk in value:
+        if chunk is None:
+            result.append(chunk); continue
+        last = chunk.shape[-1] in (1, 3, 4)
+        length = chunk.shape[0] if last else chunk.shape[1]
+        lo, hi = max(start, offset), min(start + count, offset + length)
+        if lo < hi:
+            chunk = chunk.clone()
+            piece = frames[:, lo - start:hi - start].to(chunk)
+            if last:
+                chunk[lo - offset:hi - offset] = piece.permute(1, 2, 3, 0)
+            else:
+                chunk[:, lo - offset:hi - offset] = piece
+        result.append(chunk)
+        offset += length
+    return result
+
+
+def apply_seamless_end(arguments, job, tensor, total_frames):
+    """Exact join: replace the source's last frames (decoded without their future) by the new window's re-decode of
+    the same latents. The switch frame before them is decoded identically by both; it is checked here."""
+    seam, part = job.pop('seam', None), job.get('part2')
+    if not seam or not part:
+        return arguments['tensor'], 0
+    count, frames = seam['count'], seam['frames']
+    start = total_frames - new_frame_count(part, tensor)
+    if start - count - 1 < 0:
+        raise ValueError('not enough source frames before the join')
+    exported = gather_frames(arguments['tensor'], start - count - 1, count + 1)
+    if exported.dtype != torch.uint8 or tuple(exported.shape) != tuple(frames.shape):
+        raise ValueError(f'unexpected export frames {tuple(exported.shape)} / {exported.dtype}')
+    exported, frames = exported.cpu().float(), frames.float()
+    switch = float((exported[:, 0] - frames[:, 0]).abs().mean())
+    replaced = float((exported[:, 1:] - frames[:, 1:]).abs().mean())
+    # Codec noise of the source file only (identical decode) / small decoder look-ahead changes; more means misalignment.
+    if switch > 8.0 or replaced > 25.0:
+        raise ValueError(f're-decoded frames do not match the source end (switch {switch:.2f}, replaced {replaced:.2f})')
+    job['seam_applied'] = {'frames': count, 'switch_difference': round(switch, 3), 'replaced_difference': round(replaced, 3)}
+    if job.get('pending'):
+        job['pending']['info']['seamless_end'] = dict(job['seam_applied'])
+    print(f'[H3 Latent] Seamless end: last {count} source frames replaced by their re-decode '
+          f'(switch frame difference {switch:.2f}, replaced frames difference {replaced:.2f}).')
+    return replace_frames(arguments['tensor'], start - count, frames[:, 1:].to(torch.uint8)), count
+
+
+def encode_part2(original, arguments, job, tensor, total_frames, replaced=0):
+    """Continue Video: encode only the frames created by this render (including the re-decoded source end when the
+    seamless end replaced it), with the native settings."""
+    part = job['part2']
+    part['done'] = True
+    new_frames = new_frame_count(part, tensor) + replaced
+    start = total_frames - new_frames
+    if new_frames < 1 or start < 1:
+        print(f'[H3 Latent] Second part not saved: no separable new frames (source {start}, new {new_frames}).')
+        return
+    target = Path(arguments['save_file'])
+    temporary = available_path(target.with_name(target.stem + '_h3part2_tmp' + target.suffix))
+    settings = {k: v for k, v in arguments.items() if k not in ('tensor', 'save_file')}
+    written = original(tensor=frames_from(arguments['tensor'], start), save_file=str(temporary), **settings)
+    part.update(video=str(written or temporary), start=start, frames=new_frames, fps=float(arguments['fps']))
+
+
 def make_save_wrapper(original):
     sig = inspect.signature(original)
     @functools.wraps(original)
     def save(*args, **kwargs):
         job = JOB.get()
-        if job and job.get('pending'):
+        part = job.get('part2') if job else None
+        wants_part2 = part is not None and not part.get('done') and 'tail_signatures' in part
+        if job and (job.get('pending') or wants_part2):
             arguments = bound_parameters(sig, args, kwargs)
             tensor, total_frames = export_tail(arguments['tensor'])
-            pending = job['pending']; info = pending['info']
-            last = tensor[:,-1:]
-            signature = tuple(frame_hash(tensor[:,i:i+1]) for i in range(max(0,tensor.shape[1]-8),tensor.shape[1]))
-            matches = pending['tail_signatures'].get(signature, [])
-            if len(matches) > 1:
-                raise ValueError('Ambiguous output tail (repeated identical frames); refusing to guess the latent endpoint.')
-            frame_end = matches[0] if matches else None
-            if frame_end is None:
-                raise ValueError('Output tail no longer matches the decoded latent: postprocessing or trimming is unsupported. No mismatched sidecar will be written.')
-            if tuple(tensor.shape[-2:]) != (info['height'],info['width']) or abs(float(arguments['fps'])-info['fps'])>1e-6:
-                raise ValueError('Output resolution or FPS changed after sampling.')
-            info['target_frames'] = frame_end
-            info['output_frames'] = total_frames
-            # Text-encoder presentation cache, not a re-encoded video conditioning latent.
-            pending['tensors']['last_frame'] = last.detach().cpu().float()
-            if tensor.dtype == torch.uint8:
-                pending['tensors']['last_frame'].div_(127.5).sub_(1.0)
-            job['output_seen'] = True
+            if job.get('pending'):
+                pending = job['pending']; info = pending['info']
+                last = tensor[:,-1:]
+                frame_end = match_tail(pending, tensor)
+                if tuple(tensor.shape[-2:]) != (info['height'],info['width']) or abs(float(arguments['fps'])-info['fps'])>1e-6:
+                    raise ValueError('Output resolution or FPS changed after sampling.')
+                info['target_frames'] = frame_end
+                info['output_frames'] = total_frames
+                # Text-encoder presentation cache, not a re-encoded video conditioning latent.
+                pending['tensors']['last_frame'] = last.detach().cpu().float()
+                if tensor.dtype == torch.uint8:
+                    pending['tensors']['last_frame'].div_(127.5).sub_(1.0)
+                job['output_seen'] = True
+            replaced = 0
+            if wants_part2 and job.get('seam'):
+                try:
+                    arguments['tensor'], replaced = apply_seamless_end(arguments, job, tensor, total_frames)
+                except Exception as error:  # Keep the source frames unchanged; the join stays as rendered.
+                    print(f'[H3 Latent] Seamless end not applied: {error}')
+            if wants_part2:
+                try:
+                    encode_part2(original, arguments, job, tensor, total_frames, replaced)
+                except Exception as error:  # The complete video and checkpoint remain the primary outputs.
+                    part['video'] = None
+                    print(f'[H3 Latent] Second part not saved: {error}')
+            if replaced:
+                return original(**arguments)
         return original(*args, **kwargs)
     return save
 
 
-def make_record_wrapper(original):
+def finish_part2(job, video_path, audio_codec_key):
+    """Mux the new frames with the matching audio segment of the complete exported video."""
+    import os
+    import subprocess
+    part = job.get('part2') or {}
+    temporary = part.get('video')
+    if not temporary:
+        return None
+    part['video'] = None
+    try:
+        try:
+            from shared.utils.audio_video import _ffmpeg_binary, get_video_audio_encode_args
+            ffmpeg, audio_args = _ffmpeg_binary(), get_video_audio_encode_args(audio_codec_key or 'aac_128')
+        except ImportError:
+            ffmpeg, audio_args = 'ffmpeg', ['-c:a', 'aac', '-b:a', '128k']
+        final = Path(video_path)
+        destination = available_path(final.with_name(final.stem + '_part2' + final.suffix))
+        fps = part['fps']
+        command = [ffmpeg, '-y', '-v', 'error', '-i', temporary,
+                   '-ss', f"{part['start'] / fps:.6f}", '-i', str(final),
+                   '-map', '0:v', '-map', '1:a?', '-c:v', 'copy', *audio_args,
+                   # No -t: the audio ends where the complete video's audio ends, including the
+                   # audio tail WanGP 18.19+ keeps past the last frame (model def "audio_tail_ms").
+                   str(destination)]
+        result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace')
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or 'ffmpeg failed')
+        print(f"[H3 Latent] Saved second part {destination} ({part['frames']} new frames, from frame {part['start']}).")
+        return destination
+    except Exception as error:  # The complete video and checkpoint remain the primary outputs.
+        print(f'[H3 Latent] Second part not saved: {error}')
+        return None
+    finally:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+
+
+def make_record_wrapper(original, get_server_config=lambda: None):
     sig = inspect.signature(original)
     @functools.wraps(original)
     def record(*args, **kwargs):
         result = original(*args, **kwargs)
         job = JOB.get()
-        if not job or not job.get('pending'): return result
+        if not job or not (job.get('pending') or (job.get('part2') or {}).get('video')): return result
         arguments = bound_parameters(sig, args, kwargs)
-        if not job.get('output_seen'):
-            raise RuntimeError('Latent capture was not matched to WanGP video export.')
-        path = Path(arguments['video_path'])
-        pending = job['pending']; info = pending['info']
-        info['video_filename'] = path.name
-        # Native metadata may rewrite the MP4: bind AFTER record_file_metadata has finished.
-        info['video_sha256'] = sha256_file(path)
-        configs = arguments.get('configs', {})
-        info['loras'] = {k:configs.get(k) for k in ('transformer_loras_filenames','transformer_loras_multipliers')}
-        # Native metadata may store the UI keys instead of resolved LoRA paths.
-        info['loras']['activated_loras'] = configs.get('activated_loras')
-        info['loras']['loras_multipliers'] = configs.get('loras_multipliers')
-        info['acceleration'] = {k:configs.get(k) for k in
-                                ('skip_steps_cache_type','skip_steps_multiplier','skip_steps_start_step_perc')}
-        info['source_video'] = Path(job['source']).name if job['source'] else None
-        destination = path.with_suffix('.safetensors')
-        atomic_save(destination, pending['tensors'], info)
-        print(f'[H3 Latent] Saved {destination} (final segment, {info["target_frames"]} frames, original tensor dtypes).')
-        job['saved'].append(str(destination))
-        job['pending'] = None; job['output_seen'] = False
+        if job.get('pending'):
+            if not job.get('output_seen'):
+                raise RuntimeError('Latent capture was not matched to WanGP video export.')
+            path = Path(arguments['video_path'])
+            pending = job['pending']; info = pending['info']
+            info['video_filename'] = path.name
+            # Native metadata may rewrite the MP4: bind AFTER record_file_metadata has finished.
+            info['video_sha256'] = sha256_file(path)
+            configs = arguments.get('configs', {})
+            info['loras'] = {k:configs.get(k) for k in ('transformer_loras_filenames','transformer_loras_multipliers')}
+            # Native metadata may store the UI keys instead of resolved LoRA paths.
+            info['loras']['activated_loras'] = configs.get('activated_loras')
+            info['loras']['loras_multipliers'] = configs.get('loras_multipliers')
+            info['acceleration'] = {k:configs.get(k) for k in
+                                    ('skip_steps_cache_type','skip_steps_multiplier','skip_steps_start_step_perc')}
+            info['source_video'] = Path(job['source']).name if job['source'] else None
+            destination = path.with_suffix('.safetensors')
+            atomic_save(destination, pending['tensors'], info)
+            print(f'[H3 Latent] Saved {destination} (final segment, {info["target_frames"]} frames, original tensor dtypes).')
+            job['saved'].append(str(destination))
+            job['pending'] = None; job['output_seen'] = False
+        if (job.get('part2') or {}).get('video'):
+            config = get_server_config() or {}
+            part2 = finish_part2(job, arguments['video_path'], config.get('audio_output_codec', 'aac_128'))
+            if part2 is not None:
+                job.setdefault('part2_saved', []).append(str(part2))
         return result
     return record
 

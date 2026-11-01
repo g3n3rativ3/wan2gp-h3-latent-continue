@@ -26,6 +26,7 @@ for name, path in [('shared',wangp/'shared'),('shared.utils',wangp/'shared/utils
 tree=ast.parse((wangp/'shared/utils/plugins.py').read_text())
 tree.body=[node for node in tree.body if not (isinstance(node,ast.ImportFrom) and node.module=='shared.utils.wgp_config_migration')]
 api=types.ModuleType('shared.utils.plugins');sys.modules[api.__name__]=api
+api.__file__=str(wangp/'shared/utils/plugins.py')  # Wan2GP 19.x resolves paths from __file__
 exec(compile(tree,str(wangp/'shared/utils/plugins.py'),'exec'),api.__dict__)
 PluginManager=api.PluginManager
 spec=importlib.util.spec_from_file_location('h3uitest',ROOT/'__init__.py',submodule_search_locations=[str(ROOT)])
@@ -109,8 +110,13 @@ config=app.get_config_file()
 assert not any((comp._id,'change') in event.targets
                for comp in (state,plugin_data) for event in app.fns.values())
 checkboxes=[x for x in config['components'] if x['type']=='checkbox']
-assert len(checkboxes)==2,checkboxes
-assert all(x['props']['value'] is False for x in checkboxes)
+seamless_boxes=[x for x in checkboxes if 'seamless end' in str(x['props'].get('label')) or 'phase 1 follows' in str(x['props'].get('label'))]
+noise_boxes=[x for x in checkboxes if 'WanGP 18.18' in str(x['props'].get('label'))]
+checkboxes=[x for x in checkboxes if x not in seamless_boxes and x not in noise_boxes]
+assert len(checkboxes)==2 and len(seamless_boxes)==2 and len(noise_boxes)==1,checkboxes
+assert noise_boxes[0]['props']['value'] is False  # 18.18 audio noise off by default
+assert all(x['props']['value'] is False for x in checkboxes)  # both latent operations off by default
+assert all(x['props']['value'] is True for x in seamless_boxes)  # exact-join options on (only act with Exact join)
 assert not any(x['type']=='tabitem' for x in config['components'])
 assert any(x['type']=='file' and x['props']['file_types']==['.safetensors'] for x in config['components'])
 assert parent.children[0] is video_source
@@ -126,8 +132,8 @@ print('PASS: native insertion, Gradio '+gr.__version__+', two unchecked options,
 callbacks={fn.fn.__name__:fn.fn for fn in app.fns.values() if fn.fn is not None}
 from h3uitest.integration import KEY, options, make_prepare_wrapper
 wrapped=gr.State({KEY:{'save':True,'continue':True,'latent_path':''},'another_plugin':{'keep':7}})
-assert callbacks['restore'](wrapped)==(True,True,None,'baseline',35,1.0)
-assert callbacks['restore'](gr.State())==(gr.skip(),)*6
+assert callbacks['restore'](wrapped)==(True,True,None,'baseline',35,1.0,True,True,False)
+assert callbacks['restore'](gr.State())==(gr.skip(),)*9
 assert options(gr.State(gr.State({KEY:{'save':True}})))['save'] is True
 session={'model_type':'minimax_h3_fl2va','all_settings':{'minimax_h3_fl2va':{'plugin_data':{'another_plugin':{'keep':7}}}}}
 changed=callbacks['update_data'](False,True,None,wrapped,session)
@@ -149,7 +155,7 @@ other={'all_settings':{'minimax_h3_fl2va':{}}}
 assert not options(installed['get_model_settings'](other,'minimax_h3_fl2va')['plugin_data'])['save']
 assert callbacks['visibility'](gr.State({'model_type':'minimax_h3_fl2va'}),'V')[0]['visible'] is True
 for malformed in (None,[],42,gr.State([]),{KEY:None},{KEY:'invalid'}):
-    expected=(False,False,None,'baseline',35,1.0) if isinstance(malformed,dict) and KEY in malformed else (gr.skip(),)*6
+    expected=(False,False,None,'baseline',35,1.0,True,True,False) if isinstance(malformed,dict) and KEY in malformed else (gr.skip(),)*9
     assert callbacks['restore'](malformed)==expected
 def clean(target,inputs,model_type=None,model_filename=None):
     inputs.pop('plugin_data',None)
@@ -164,12 +170,16 @@ print('PASS: native model discovery + real State restoration/update/visibility/q
 # values must win over stale plugin_data through actual Gradio processing.
 from gradio.state_holder import SessionState
 save_event=next(event for event in app.fns.values() if getattr(event.fn,'_h3_form_bound',False))
-assert len(save_event.inputs)==len(native_inputs)+6
+assert len(save_event.inputs)==len(native_inputs)+9  # 9 plugin controls incl. the exact-join and 18.18 noise options
 async def exercise_submission():
     session=SessionState(app)
     session[state._id]=StateClass(model_type='minimax_h3_fl2va')
     session[plugin_data._id]={KEY:{'save':False},'another_plugin':{'keep':7}}
-    await app.process_api(save_event,[None]*len(native_inputs)+[True,False,None,'baseline',35,1.0],state=session)
+    await app.process_api(save_event,[None]*len(native_inputs)+[True,False,None,'baseline',35,1.0,False,False,True],state=session)
+    # save_inputs remembers the captured options per model in the session state (UI_KEY).
+    captured=session[state._id]['_h3_latent_ui_options']['minimax_h3_fl2va']
+    assert captured.get('seamless_end') is False and captured.get('phase1_from_final') is False, 'Unticked exact-join options not captured'
+    assert captured.get('audio_noise_1818') is True, '18.18 audio noise option not captured'
     # Reproduce the OTHER shared-state cycle missed by 0.3.3's state-only test.
     payload={KEY:{'save':True,'continue':False},'foreign':{}}
     payload['foreign']['self']=payload['foreign']
@@ -183,7 +193,7 @@ async def exercise_submission():
         assert restored['data'][:2]==[True,False]
         assert session[plugin_data._id]['foreign']['self'] is session[plugin_data._id]['foreign']
     update_event=next(fn for fn in app.fns.values() if fn.fn.__name__=='update_data')
-    await app.process_api(update_event,[True,False,None,None,None,'baseline',35,1.0],state=session)
+    await app.process_api(update_event,[True,False,None,None,None,'baseline',35,1.0,True,True,False],state=session)
     assert session[plugin_data._id]['foreign']['self'] is session[plugin_data._id]['foreign']
     session[plugin_data._id]={KEY:{'save':False},'another_plugin':{'keep':7}}
     print('PASS: repeated cyclic plugin_data import + option restoration, foreign cycle preserved')
@@ -205,7 +215,7 @@ async def exercise_submission():
         await app.process_api(import_event,[None],state=session)
     assert session[state._id]['gen']['queue'][0]['params']['state'] is st
     # A later checkbox change must not modify an already queued task.
-    await app.process_api(save_event,[None]*len(native_inputs)+[False,False,None,'baseline',35,1.0],state=session)
+    await app.process_api(save_event,[None]*len(native_inputs)+[False,False,None,'baseline',35,1.0,False,False,False],state=session)
     assert options(installed['get_model_settings'](st,'minimax_h3_fl2va')['plugin_data'])['save'] is False
     assert options(task['plugin_data'])['save'] is True
     from h3uitest.integration import make_generation_wrapper,make_save_wrapper,make_record_wrapper
@@ -256,7 +266,7 @@ async def exercise_submission():
         assert manifest['video_sha256']==sha256_file(destination)
         assert JOB.get() is None
     # New controls must take the same proven form -> queue route.
-    await app.process_api(save_event,[None]*len(native_inputs)+[True,True,None,'audio_prefix',52,2.0],state=session)
+    await app.process_api(save_event,[None]*len(native_inputs)+[True,True,None,'audio_prefix',52,2.0,True,True,False],state=session)
     experimental=installed['get_model_settings'](st,'minimax_h3_fl2va')
     experimental.update(state=st,model_type='minimax_h3_fl2va')
     installed['add_video_task'](**experimental)

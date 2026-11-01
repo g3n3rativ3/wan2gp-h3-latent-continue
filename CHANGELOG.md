@@ -1,3 +1,95 @@
+# 0.6.5
+
+- Wan2GP 19.02: the audio-length and audio-noise edits re-anchored with per-version variants (19.02 names the tail
+  `audio_tail_latents` and adds the Pika H3 Flex sampler); 18.19 and 18.17/18.18 variants kept.
+- Pika sampler (`pika_renoise`, 6 steps): save, continuation in all join modes and Exact join supported (pinned latents
+  and frozen audio exact); "Audio noise as WanGP 18.18" does not change Pika's own noise (Pika has no audio tail).
+- Harness: Pika module loaded from WanGP, `ptd` attribute, plugins.py `__file__`, attention_kit SageAttention stubs.
+
+# 0.6.4
+
+- "Audio noise as WanGP 18.18" also applies alone, to every H3 render (Text Only, Start with Image, Continue Video,
+  sliding windows): only the seeded audio noise changes; no latent operation, restriction, checkpoint or NaN stop.
+
+# 0.6.3
+
+- Exact join: the new window length is rounded DOWN to an H3 length (5+17n). Starting the window on the VAE chunk
+  boundary leaves e.g. 349 frames for a 362-frame WanGP window; native H3 rounded that up to 362, so the model
+  composed a longer scene (dialogue included) and the last 13 frames were cut at delivery. Now the scene is generated
+  for exactly the delivered frames; the new part is up to 16 frames (4 with a 5+17n source) shorter than requested.
+  Requested/generated counts logged and recorded in effective_context.pinned.
+
+# 0.6.2
+
+- NaN/inf produced by the model during a render with latent options is reported explicitly, with the stage (end of
+  phase 1, before the audio refinement, end of denoising) and the affected video/audio latents; the render stops
+  before decoding instead of failing later with "Ambiguous output tail". Checkpoints were already checked on load.
+
+# 0.6.1
+
+- Option "Audio noise as WanGP 18.18": seeded audio noise drawn without the 18.19 audio tail (channel-major rows as
+  before), tail noise from its own generator; same rule for the refinement re-noise and er_sde step noise.
+  Off by default; option captured, restored and transported; recorded as settings.audio_noise in the checkpoint.
+
+# 0.6.0
+
+- Exact join in two phases: phase 1 follows the final video (pinned frames re-encoded at phase-1 size with keep_all_latents,
+  context from the final latents reduced to phase 1); option, default on; single-phase checkpoints usable in two phases.
+- Real-encoder causality check in tests/vae_seam_check.py; harness encoder stand-in returns pixel-dependent latents.
+
+# 0.5.3
+
+- Wording: pinned frames and seamless end follow WanGP's "Windows Frames Overlap"; console states the slider value needed.
+
+# 0.5.2
+
+- Exact join "seamless end" option (default on): the source's last partial VAE chunk is replaced in the complete video
+  by the new window's re-decode; export-side consistency checks; second part starts at the replaced frames.
+- UI checkbox, form capture, settings restore and task transport for `seamless_end`.
+- tests/vae_seam_check.py on the real H3 decoder code; export test with real ffmpeg; UI smoke updated.
+
+# 0.5.1
+
+- Audio guides allowed with the frozen audio prefix and Exact join (Ref2VA voice references); FL2VA soundtrack
+  conditioning still refused, with an explicit message.
+- Harness: sample-major waveforms (as WanGP passes them), Ref2VA image + voice references in all join modes with the
+  packed layout checked including references, FL2VA soundtrack refusal.
+
+# 0.5.0
+
+- New join mode "Exact join" (pinned): window on a VAE chunk boundary, first target latents pinned to the saved
+  latents via native masked denoising (phase 1 and phase 2), frozen audio prefix shifted with the window,
+  context keyframes before the pinned region; form denoising/masking strengths forced to 1 for the pin.
+- Diagnosis of the visible seam documented (no pinned target frame; out-of-distribution context placement).
+
+# 0.4.2
+
+- Wan2GP 18.19: audio-length edit re-anchored with per-version variants (18.19 audio tail / 18.17).
+- native_edits.json supports {"variants": [...]} entries (first unique match wins).
+- Second part keeps the audio tail past the last frame, like the complete video.
+- Harness expects the native audio tail; part2 test with a 100 ms tail.
+
+# 0.4.1
+
+- Two-phase continuation when the phase-1 size changed since the source render: saved phase-1 latents resampled
+  (bilinear, antialiased when shrinking) to the current phase-1 size; phase 2 unchanged (exact). Logged and recorded.
+- Latent generate compiled at the native line numbers (readable tracebacks).
+
+# 0.4.0
+
+- Allow the Audio Refinement Extra Phase (native and H3 Audio Refinement Controls 1.1.0).
+- Latent join kept during refinement: saved-latent audio conditions, frozen prefix restored after re-noise, prefix time offset.
+- Compose with H3 Audio Refinement Controls' in-place generate rewrite (exact schedule, kept audio references);
+  installed body verified by bytecode; warning for unknown in-place rewrites.
+- Harness: real module globals, optional refinement plugin argument, refinement passes recorded; tests/test_refinement.py.
+
+# 0.3.9
+
+- Continue Video: also save the new part alone as `<name>_part2.<container>` (native encoder settings, matching audio segment).
+- Start frame located from exact tail fingerprints (handles WGP tail trimming); overlap frames excluded.
+- Failure to write the second part is a warning, never a render failure; complete video and checkpoint unchanged.
+- New tests/part2_smoke.py with the real native save_video/mux helpers and ffmpeg.
+
 # 0.3.8
 
 - Two-phase H3 support for save and continue (untiled phase 2).

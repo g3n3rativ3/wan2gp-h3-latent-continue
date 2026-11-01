@@ -58,4 +58,27 @@ class SeamTests(unittest.TestCase):
         with self.assertRaises(ValueError): seam_settings({'join_mode':'context','video_context_frames':999})
 
 
+class PinnedGeometry(unittest.TestCase):
+    def test_window_starts_on_chunk_boundary(self):
+        from h3seamtest.seams import pinned_geometry
+        from h3seamtest.checkpoint import token_start
+        for delivered in (107, 111, 119, 120, 124, 243):
+            for overlap in (5, 9, 18, 35, 52):
+                try:
+                    pin = pinned_geometry(delivered, 200, overlap)
+                except ValueError:
+                    continue
+                self.assertEqual(token_start(pin['first_latent']), pin['clip_start'])
+                self.assertEqual(pin['clip_start'] % 17, 0)
+                self.assertEqual(token_start(pin['first_latent'] + pin['latents']), delivered)
+                self.assertLessEqual(pin['frames'], overlap)
+        self.assertEqual(pinned_geometry(243, 72, 18), {'frames': 5, 'latents': 2, 'first_latent': 70, 'clip_start': 238})
+
+    def test_refusals(self):
+        from h3seamtest.seams import pinned_geometry
+        with self.assertRaises(ValueError): pinned_geometry(122, 200, 18)   # tail trimmed off the latent grid
+        with self.assertRaises(ValueError): pinned_geometry(124, 200, 1)    # overlap shorter than the last chunk part
+        with self.assertRaises(ValueError): pinned_geometry(243, 60, 18)    # latents do not cover the delivered frames
+
+
 if __name__=='__main__': unittest.main()

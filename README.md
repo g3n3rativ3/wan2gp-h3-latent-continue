@@ -1,6 +1,204 @@
 # H3 Latent Continue for Wan2GP
 
-Version **0.3.8**. MiniMax H3 latent continuation for Wan2GP. **One or two generation phases** (untiled phase 2).
+Version **0.6.0**. Tested with Wan2GP **18.17 and 18.19**. MiniMax H3 latent continuation for Wan2GP. **One or two generation phases** (untiled phase 2),
+with or without the **Audio Refinement Extra Phase**.
+
+## Version 0.6.5: WanGP 19.02
+
+Compatible with WanGP 19.02 (and still 18.17 to 18.19). The new Pika H3 Flex sampler works with every latent option,
+including Exact join; "Audio noise as WanGP 18.18" leaves Pika's own noise unchanged.
+
+## Version 0.6.3: exact join no longer cut at the end
+
+H3 only generates 5+17n frames. With Exact join the window starts on a VAE chunk boundary, so the frames left to
+generate are usually not such a length (e.g. 349 instead of 362). The model used to plan the rounded-up length and
+the end was cut (speech interrupted). The window is now rounded down: the scene ends where the video ends, and the
+new part is a few frames shorter than requested (4 frames with sources of 5+17n frames, at most 16).
+
+## Version 0.6.1: audio noise as WanGP 18.18
+
+WanGP 18.19 generates 5 extra audio latents past the last frame (the "audio tail"). The seeded audio noise is drawn
+as one block of channel-major rows (all of channel 0, then all of channel 1), so with a longer audio the second
+channel receives different noise: the same seed no longer reproduces a render made with WanGP 18.18 or earlier
+(the video noise is unchanged; speech, pauses and who speaks can change, and the image follows).
+
+**Audio noise as WanGP 18.18** (unchecked by default, under *Save latent checkpoint*) draws the seeded audio noise
+for the audio without its tail, exactly as before 18.19, and the tail noise from a separate generator. The same
+rule applies to the Audio Refinement re-noise and to er_sde step noise. The tail is still generated and saved.
+Applies to every H3 render when checked (Text Only, Start with Image, Continue Video, sliding windows), alone or with the latent options; recorded in the checkpoint settings (`audio_noise`) when a checkpoint is saved. Expect a very
+close render, not a bit-identical one: the 5 tail latents are still in the sequence, and WanGP 18.19 also
+computes LoRA deltas in the weight dtype.
+
+## Version 0.6.0: two phases, phase 1 follows the final video
+
+Reported: in two phases the people are stable but walls and ceiling "morph" during the first second of
+part 2. Measured on the supplied clip: the ceiling drifts away from the last source frame by 1.8 -> 5.0 ->
+5.5 (after 6 / 24 / 48 frames) against 1.3-1.8 inside part 1 over the same distances, then settles; the
+4-frame flicker pattern is the same in both parts (native two-phase behaviour).
+
+Cause: phase 1 continued the source's *phase-1 draft* latents. The final video is the phase-2 result, which
+redraws details (panel shapes) on top of that draft; the saved draft differs from the reduced final by more
+than one latent step of motion. The first new frames follow the pinned final frames, the next ones go back
+to the draft's structure: the morph.
+
+**Exact join, two phases: phase 1 follows the final video** (checked by default) does what native H3 does
+for phase 1: the pinned frames are the final source frames (overlap pixels) encoded at the phase-1 size by
+the native VAE, on the window's own chunk grid; the phase-1 context comes from the final latents reduced to
+phase 1. Phase 2 still pins the exact full-resolution latents. A checkpoint saved in one phase can now be
+continued in two phases with Exact join. Untick to use the saved phase-1 draft (0.5.x behaviour, no encode).
+tests/vae_seam_check.py also checks on WanGP's encoder code that the re-encoded pinned latents do not depend
+on the chunk padding.
+
+## Version 0.5.3: overlap wording
+
+The number of pinned frames and the seamless end depend on WanGP's **Windows Frames Overlap** slider
+(Sliding Window section; H3 steps 1, 18, 35, 52), not on the plugin's *Video latent context*. The panel text,
+the checkbox label and the console lines now name that slider (with an 18 overlap the console says the seamless
+end needs 35).
+
+## Version 0.5.2: Exact join seamless end
+
+Measured after Exact join (35-frame overlap): seam 2.3x the normal motion (was 7.7x), no colour step,
+residual spread evenly over the image. The H3 decoder decodes 7-latent windows (a 17-frame chunk plus two
+look-ahead latents) and cross-fades 5 frames. The source's last 5 frames were decoded without their future;
+the new window decodes the same latents with the real future.
+
+**Exact join: seamless end** (checked by default, acts only with Exact join) replaces the source's last
+frames in the complete video by the new window's decode of the same latents. On WanGP's real decoder code
+(tests/vae_seam_check.py) frames 226..238 of a 243-frame segment are decoded identically by the source and the
+exact-join window, and only 239..242 change: the switch happens between identical frames.
+
+- Needs the pin to include the full chunk before the last partial one: overlap >= 35 for 5+17n-frame sources
+  (otherwise a console line says it is skipped).
+- Before replacing, the export checks the switch frame against the source (codec noise only) and the
+  replaced frames (small decoder differences); otherwise the source end is kept, with a console message.
+- The complete video then differs from the source file on those last frames; `_part2` starts that many
+  frames earlier so that (source minus its last frames) + `_part2` = complete video. The audio is unchanged.
+- The checkpoint is bound to the complete video as exported (with the replaced frames).
+
+## Version 0.5.1: audio references with frozen audio
+
+Exact join and the frozen audio prefix refused any audio guide. In Ref2VA, audio guides are voice
+*references* (separate condition rows, like audio RefMods): they are now accepted in every join mode.
+The only real conflict is an audio guide that drives the generated soundtrack itself (FL2VA audio
+used as soundtrack); it is refused with an explicit message when the frozen audio is placed.
+
+## Version 0.5.0: Exact join
+
+### Why the previous modes show a visible seam
+
+Measured on a reported clip (243 + 242 frames, context mode, 52 frames): the frame difference
+at the seam is 7.7 times the normal frame-to-frame motion, with no global displacement (0.5 px)
+and an exposure step of about 2 levels; hair, faces and background textures are all re-drawn.
+The composition is followed but the first new frame is not the continuation of the last one.
+
+- In the previous modes **no target frame is pinned**. The whole new window starts from noise;
+  the saved latents are only attention conditions. A low-step (Turbo) render reinterprets them,
+  exactly like H3 reinterprets a start image (frame 0 is generated, not written).
+- These conditions are sequence latents presented as image keyframes, placed *before* frame 0.
+  With 52 frames of context they reach about 85 RoPE positions before the target start, in the
+  time range of the prompt tokens: out of what H3 was trained on.
+- WanGP notes the same limit for native continuation ("Native H3 history alone loses that
+  appearance constraint") and pins the overlap inside the target, but only for ControlNet models.
+
+### What Exact join does
+
+Choose **Exact join: last frames pinned to saved latents + frozen audio** in *Join experiment*.
+
+- The new window starts on a VAE chunk boundary of the saved segment. The H3 VAE encodes each
+  17-frame chunk on its own ([1, 4, 4, 4, 4] frames per latent), so the window's first latents
+  *are* the saved latents of the last source frames: 5 frames with an 18-frame overlap, 22 with
+  35, 39 with 52.
+- Those latents are kept fixed while the rest is generated, with WanGP's own masked denoising
+  (prediction replaced on the pinned frames, exact at the last step), in one and two phases
+  (phase-1 latents for phase 1). The new frames continue the same latent sequence.
+- The soundtrack of the pinned frames is frozen too (frozen audio prefix moved with the window),
+  and the audio is decoded jointly with it.
+- Earlier history (video context 18/35/52) is still given as context before the pinned frames.
+- WanGP still drops the overlap, so the pinned frames are not repeated in the output.
+
+Requirements: Continue Video with a checkpoint, overlap >= 5 frames (the source segment must end
+on a latent boundary, which WanGP's 5+17n lengths do), audio context covering the pinned frames
+(1 s for up to 22 pinned frames), No Skipping. A few frames more than the window are generated
+and cut (the shifted window is rounded up to the H3 frame grid). Checkpoints of earlier versions
+work unchanged.
+
+Known limit: the H3 decoder looks two latents ahead. The last source frames were decoded without
+the future; the new frames are decoded with the exact past. A small residual step at the very
+seam frame is possible; this needs a GPU comparison.
+
+## Version 0.4.2: Wan2GP 18.19
+
+Wan2GP 18.19 generates 5 audio latents past the last video frame (`H3_AUDIO_TAIL_LATENTS`) and keeps
+about 100 ms of audio after the last frame in the saved video (`audio_tail_ms`). The audio-length line
+of `generate` changed, so hook installation failed again ("no reachable native method contains the
+required latent insertion points"), in one and two phases.
+
+- The audio-length edit now has one variant per WanGP version (18.19 with the audio tail, 18.17
+  without): the first variant that matches exactly once is used. The extended-context modes add the
+  same tail as native.
+- Checkpoints store the audio latents including the tail; the join conditions still stop at the last
+  delivered frame, so continuations are unchanged.
+- `_part2` keeps the audio tail exactly like the complete video (no cut at the last frame).
+- 18.19 disables H3's native audio repair at joins; the plugin's neutralisation simply has nothing to do.
+
+## Version 0.4.1: phase-1 size changed since the source render
+
+Phase 1 of a two-phase render is generated at the target divided by
+`H3_TWO_PHASE_SCALE`, rounded to 32 pixels. When that size differs between the
+source render and the continuation (scale changed by a setting or another plugin,
+or a resolution whose rounding moves), 0.4.0 stopped with "no saved latents match
+the WxH generation stage". The saved phase-1 latents are now resampled spatially
+to the new phase-1 size, with a console message. This is approximate; phase 2
+still uses the exact full-resolution latents. The checkpoint manifest records it
+(`effective_context.phase1_resampled_from`). Tracebacks inside the latent version
+of `generate` now report the real `pipeline.py` lines.
+
+## Version 0.4.0: Audio Refinement Extra Phase
+
+The extra audio refinement phase is now allowed: WanGP's native one, and the
+**H3 Audio Refinement Controls** plugin (`wan2gp-h3-audio-refinement`, steps,
+denoising strength, Keep Audio References).
+
+- Any `audio_refinement` value is accepted (`none`, `enabled`, `disabled:6:0.5`,
+  `enabled:1:0.1:audio_refs`). The refusal of 0.3.9 also blocked the refinement
+  plugin's *disabled* value.
+- **Join kept during the refinement.** Native refinement re-noises the whole
+  soundtrack with no condition. During a latent continuation the plugin keeps the
+  join's saved-latent audio conditions. In the frozen audio-prefix mode it also
+  restores the frozen prefix after the re-noise and keeps its time offset (without
+  it, the audio would be shifted by the pre-roll during the refinement). Renders
+  without a latent join refine exactly as WanGP / the refinement plugin do.
+- The checkpoint stores the refined audio (captured after the refinement).
+- **Combined with H3 Audio Refinement Controls.** That plugin rewrites the body of
+  `generate` from the WanGP source (exact schedule, kept audio references). The
+  latent version, also built from the source, now applies the same rewrites, so
+  they stay active with the latent options on. The installed body is checked by
+  bytecode against "WanGP source + those rewrites" before combining.
+- If another plugin rewrote `generate` in place in an unknown way, a console
+  warning says its change is not applied with latent options on (wrappers, such as
+  RefMods, are not concerned).
+- Combined with two phases: the refinement runs after phase 2, as native.
+
+## Version 0.3.9: second part saved alone
+
+With **Continue Video**, when Save latent checkpoint or Continue with latent is
+checked, the plugin also writes the part created by the render alone, next to
+the complete video: `<name>_part2.mp4` (same container as the output).
+
+- Frames: only the new frames, i.e. the complete video minus the source video.
+  The overlap frames regenerated by the window are excluded, as in the complete
+  video, so source video + second part = complete video.
+- Video: encoded by WanGP's own `save_video` with the same codec settings as the
+  complete video.
+- Audio: the matching segment of the complete video's soundtrack, re-encoded with
+  WanGP's audio output codec (sample-accurate start).
+- Start frame: found from the exact fingerprints of the exported tail, so a tail
+  trimmed by WanGP to match the requested length is handled.
+- The complete video and the latent checkpoint are unchanged and remain the
+  files to continue from. If the second part cannot be written, a warning is
+  printed and the render still succeeds.
+- The second part is a plain file: it is not added to the WanGP gallery.
 
 ## Version 0.3.8: two-phase support
 

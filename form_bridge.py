@@ -27,10 +27,13 @@ def bind_form_events(context, data_component, controls, get_model):
             @functools.wraps(fn)
             def save_form(*values):
                 bound = sig.bind(*values[:n])
-                saved, enabled, path, experiment, video_frames, audio_seconds = values[n:]
+                saved, enabled, path, experiment, video_frames, audio_seconds, *more = values[n:]
                 payload = state_mapping(bound.arguments['plugin_data'])
                 payload[KEY] = {'save': bool(saved), 'continue': bool(enabled), 'latent_path': path or '',
-                                'join_mode':experiment,'video_context_frames':video_frames,'audio_context_seconds':audio_seconds}
+                                'join_mode':experiment,'video_context_frames':video_frames,'audio_context_seconds':audio_seconds,
+                                'seamless_end': bool(more[0]) if more else True,
+                                'phase1_from_final': bool(more[1]) if len(more) > 1 else True,
+                                'audio_noise_1818': bool(more[2]) if len(more) > 2 else False}
                 captured = dict(payload[KEY])
                 state = bound.arguments['state']
                 model = get_model(state_mapping(state))
